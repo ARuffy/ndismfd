@@ -23,15 +23,15 @@ Notes:
 
 #if DBG
 
-INT                 filterDebugLevel = DL_WARN;
+INT                   filterDebugLevel = DL_TRACE;
 
 NDIS_SPIN_LOCK        filterDbgLogLock;
 
 PFILTERD_ALLOCATION    filterdMemoryHead = (PFILTERD_ALLOCATION)NULL;
 PFILTERD_ALLOCATION    filterdMemoryTail = (PFILTERD_ALLOCATION)NULL;
-ULONG                filterdAllocCount = 0;    // how many allocated so far (unfreed)
+ULONG                  filterdAllocCount = 0;    // how many allocated so far (unfreed)
 
-NDIS_SPIN_LOCK        filterdMemoryLock;
+NDIS_SPIN_LOCK         filterdMemoryLock;
 BOOLEAN                filterdInitDone = FALSE;
 
 

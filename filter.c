@@ -24,7 +24,7 @@ Abstract:
 // Global variables
 //
 NDIS_HANDLE         FilterDriverHandle; // NDIS handle for filter driver
-NDIS_HANDLE         FilterDriverObject;
+NDIS_HANDLE         FilterDriverObject; // NDIS driver object
 NDIS_HANDLE         NdisFilterDeviceHandle = NULL;
 PDEVICE_OBJECT      NdisDeviceObject = NULL;
 
@@ -34,13 +34,12 @@ LIST_ENTRY          FilterModuleList;
 NDIS_FILTER_PARTIAL_CHARACTERISTICS DefaultChars = {
 { 0, 0, 0},
 	  0,
-	  FilterSendNetBufferLists,
-	  FilterSendNetBufferListsComplete,
+	  NULL,
+	  NULL,
 	  NULL,
 	  FilterReceiveNetBufferLists,
 	  FilterReturnNetBufferLists
 };
-
 
 _Use_decl_annotations_
 NTSTATUS
@@ -102,12 +101,6 @@ Return Value:
 		FChars.UniqueName = UniqueName;
 		FChars.ServiceName = ServiceName;
 
-		//
-		// TODO: Most handlers are optional, however, this sample includes them
-		// all for illustrative purposes.  If you do not need a particular
-		// handler, set it to NULL and NDIS will more efficiently pass the
-		// operation through on your behalf.
-		//
 		FChars.SetOptionsHandler = FilterRegisterOptions;
 		FChars.AttachHandler = FilterAttach;
 		FChars.DetachHandler = FilterDetach;
@@ -119,25 +112,21 @@ Return Value:
 		FChars.OidRequestHandler = NULL;
 		FChars.OidRequestCompleteHandler = NULL;
 		FChars.CancelOidRequestHandler = NULL;
-		// Send/Receive handlers
-		FChars.SendNetBufferListsHandler = FilterSendNetBufferLists;
-		FChars.ReturnNetBufferListsHandler = FilterReturnNetBufferLists;
-		FChars.SendNetBufferListsCompleteHandler = FilterSendNetBufferListsComplete;
+		// NBL Send/Receive handlers
+		FChars.SendNetBufferListsHandler = NULL;
+		FChars.SendNetBufferListsCompleteHandler = NULL;
+		FChars.CancelSendNetBufferListsHandler = NULL;
 		FChars.ReceiveNetBufferListsHandler = FilterReceiveNetBufferLists;
-		FChars.CancelSendNetBufferListsHandler = FilterCancelSendNetBufferLists;
+		FChars.ReturnNetBufferListsHandler = FilterReturnNetBufferLists;
 		// PNP handlers
 		FChars.DevicePnPEventNotifyHandler = NULL;
 		FChars.NetPnPEventHandler = NULL;
 		// Status handlers
 		FChars.StatusHandler = NULL;
 
-
 		DriverObject->DriverUnload = FilterUnload;
 		FilterDriverHandle = NULL;
 
-		//
-		// Initialize spin locks
-		//
 		FILTER_INIT_LOCK(&FilterListLock);
 
 		InitializeListHead(&FilterModuleList);
@@ -162,13 +151,11 @@ Return Value:
 			break;
 		}
 
-
 	} while (bFalse);
 
 
 	DEBUGP(DL_TRACE, "<=== DriverEntry, Status = %8x\n", Status);
 	return Status;
-
 }
 
 _Use_decl_annotations_
@@ -183,7 +170,6 @@ Routine Description:
 	Register optional handlers with NDIS.
 
 Arguments:
-
 	NdisFilterDriverHandle - pointer the driver handle received from
 							 NdisFRegisterFilterDriver
 
@@ -254,8 +240,7 @@ N.B.:  FILTER can use NdisRegisterDeviceEx to create a device, so the upper
 	NDIS_STATUS             Status = NDIS_STATUS_SUCCESS;
 	NDIS_FILTER_ATTRIBUTES  FilterAttributes;
 	ULONG                   Size;
-	BOOLEAN               bFalse = FALSE;
-
+	BOOLEAN                 bFalse = FALSE;
 
 	DEBUGP(DL_TRACE, "===> FilterAttach: NdisFilterHandle %p\n", NdisFilterHandle);
 
@@ -624,190 +609,13 @@ Arguments:
 
 _Use_decl_annotations_
 VOID
-FilterSendNetBufferListsComplete(
-	NDIS_HANDLE         FilterModuleContext,
-	PNET_BUFFER_LIST    NetBufferLists,
-	ULONG               SendCompleteFlags
-)
-/*++
-
-Routine Description:
-
-	Send complete handler
-
-	This routine is invoked whenever the lower layer is finished processing
-	sent NET_BUFFER_LISTs.  If the filter does not need to be involved in the
-	send path, you should remove this routine and the FilterSendNetBufferLists
-	routine.  NDIS will pass along send packets on behalf of your filter more
-	efficiently than the filter can.
-
-Arguments:
-
-	FilterModuleContext     - our filter context
-	NetBufferLists          - a chain of NBLs that are being returned to you
-	SendCompleteFlags       - flags (see documentation)
-
-Return Value:
-
-	 NONE
-
---*/
-{
-	PMS_FILTER         pFilter = (PMS_FILTER)FilterModuleContext;
-	ULONG              NumOfSendCompletes = 0;
-	BOOLEAN            DispatchLevel;
-	PNET_BUFFER_LIST   CurrNbl;
-
-	DEBUGP(DL_TRACE, "===>SendNBLComplete, NetBufferList: %p.\n", NetBufferLists);
-
-
-	//
-	// If your filter injected any send packets into the datapath to be sent,
-	// you must identify their NBLs here and remove them from the chain.  Do not
-	// attempt to send-complete your NBLs up to the higher layer.
-	//
-
-	//
-	// If your filter has modified any NBLs (or NBs, MDLs, etc) in your
-	// FilterSendNetBufferLists handler, you must undo the modifications here.
-	// In general, NBLs must be returned in the same condition in which you had
-	// you received them.  (Exceptions: the NBLs can be re-ordered on the linked
-	// list, and the scratch fields are don't-care).
-	//
-
-	if (pFilter->TrackSends)
-	{
-		CurrNbl = NetBufferLists;
-		while (CurrNbl)
-		{
-			NumOfSendCompletes++;
-			CurrNbl = NET_BUFFER_LIST_NEXT_NBL(CurrNbl);
-
-		}
-		DispatchLevel = NDIS_TEST_SEND_AT_DISPATCH_LEVEL(SendCompleteFlags);
-		FILTER_ACQUIRE_LOCK(&pFilter->Lock, DispatchLevel);
-		pFilter->OutstandingSends -= NumOfSendCompletes;
-		FILTER_LOG_SEND_REF(2, pFilter, PrevNbl, pFilter->OutstandingSends);
-		FILTER_RELEASE_LOCK(&pFilter->Lock, DispatchLevel);
-	}
-
-	// Send complete the NBLs.  If you removed any NBLs from the chain, make
-	// sure the chain isn't empty (i.e., NetBufferLists!=NULL).
-
-	NdisFSendNetBufferListsComplete(pFilter->FilterHandle, NetBufferLists, SendCompleteFlags);
-
-	DEBUGP(DL_TRACE, "<===SendNBLComplete.\n");
-}
-
-
-_Use_decl_annotations_
-VOID
-FilterSendNetBufferLists(
-	NDIS_HANDLE         FilterModuleContext,
-	PNET_BUFFER_LIST    NetBufferLists,
-	NDIS_PORT_NUMBER    PortNumber,
-	ULONG               SendFlags
-)
-/*++
-
-Routine Description:
-
-	Send Net Buffer List handler
-	This function is an optional function for filter drivers. If provided, NDIS
-	will call this function to transmit a linked list of NetBuffers, described by a
-	NetBufferList, over the network. If this handler is NULL, NDIS will skip calling
-	this filter when sending a NetBufferList and will call the next lower
-	driver in the stack.  A filter that doesn't provide a FilerSendNetBufferList
-	handler can not originate a send on its own.
-
-Arguments:
-
-	FilterModuleContext     - our filter context area
-	NetBufferLists          - a List of NetBufferLists to send
-	PortNumber              - Port Number to which this send is targeted
-	SendFlags               - specifies if the call is at DISPATCH_LEVEL
-
---*/
-{
-	PMS_FILTER          pFilter = (PMS_FILTER)FilterModuleContext;
-	PNET_BUFFER_LIST    CurrNbl;
-	BOOLEAN             DispatchLevel;
-	BOOLEAN             bFalse = FALSE;
-
-	DEBUGP(DL_TRACE, "===>SendNetBufferList: NBL = %p.\n", NetBufferLists);
-
-	do
-	{
-
-		DispatchLevel = NDIS_TEST_SEND_AT_DISPATCH_LEVEL(SendFlags);
-#if DBG
-		//
-		// we should never get packets to send if we are not in running state
-		//
-
-		FILTER_ACQUIRE_LOCK(&pFilter->Lock, DispatchLevel);
-		//
-		// If the filter is not in running state, fail the send
-		//
-		if (pFilter->State != FilterRunning)
-		{
-			FILTER_RELEASE_LOCK(&pFilter->Lock, DispatchLevel);
-
-			CurrNbl = NetBufferLists;
-			while (CurrNbl)
-			{
-				NET_BUFFER_LIST_STATUS(CurrNbl) = NDIS_STATUS_PAUSED;
-				CurrNbl = NET_BUFFER_LIST_NEXT_NBL(CurrNbl);
-			}
-			NdisFSendNetBufferListsComplete(pFilter->FilterHandle,
-				NetBufferLists,
-				DispatchLevel ? NDIS_SEND_COMPLETE_FLAGS_DISPATCH_LEVEL : 0);
-			break;
-
-		}
-		FILTER_RELEASE_LOCK(&pFilter->Lock, DispatchLevel);
-#endif
-		if (pFilter->TrackSends)
-		{
-			FILTER_ACQUIRE_LOCK(&pFilter->Lock, DispatchLevel);
-			CurrNbl = NetBufferLists;
-			while (CurrNbl)
-			{
-				pFilter->OutstandingSends++;
-				FILTER_LOG_SEND_REF(1, pFilter, CurrNbl, pFilter->OutstandingSends);
-
-				CurrNbl = NET_BUFFER_LIST_NEXT_NBL(CurrNbl);
-			}
-			FILTER_RELEASE_LOCK(&pFilter->Lock, DispatchLevel);
-		}
-
-		//
-		// If necessary, queue the NetBufferLists in a local structure for later
-		// processing.  However, do not queue them for "too long", or else the
-		// system's performance may be degraded.  If you need to hold onto an
-		// NBL for an unbounded amount of time, then allocate memory, perform a
-		// deep copy, and complete the original NBL.
-		//
-
-		NdisFSendNetBufferLists(pFilter->FilterHandle, NetBufferLists, PortNumber, SendFlags);
-
-
-	} while (bFalse);
-
-	DEBUGP(DL_TRACE, "<===SendNetBufferList. \n");
-}
-
-_Use_decl_annotations_
-VOID
 FilterReturnNetBufferLists(
 	NDIS_HANDLE         FilterModuleContext,
 	PNET_BUFFER_LIST    NetBufferLists,
 	ULONG               ReturnFlags
 )
 /*++
-
 Routine Description:
-
 	FilterReturnNetBufferLists handler.
 	FilterReturnNetBufferLists is an optional function. If provided, NDIS calls
 	FilterReturnNetBufferLists to return the ownership of one or more NetBufferLists
@@ -833,23 +641,18 @@ Arguments:
 	BOOLEAN             DispatchLevel;
 	ULONG               Ref;
 
-	DEBUGP(DL_TRACE, "===>ReturnNetBufferLists, NetBufferLists is %p.\n", NetBufferLists);
+	DEBUGP(DL_TRACE, "===> ReturnNetBufferLists, NetBufferLists is %p.\n", NetBufferLists);
 
-
-	//
 	// If your filter injected any receive packets into the datapath to be
 	// received, you must identify their NBLs here and remove them from the
 	// chain.  Do not attempt to receive-return your NBLs down to the lower
 	// layer.
-	//
 
-	//
 	// If your filter has modified any NBLs (or NBs, MDLs, etc) in your
 	// FilterReceiveNetBufferLists handler, you must undo the modifications here.
 	// In general, NBLs must be returned in the same condition in which you had
 	// you received them.  (Exceptions: the NBLs can be re-ordered on the linked
 	// list, and the scratch fields are don't-care).
-	//
 
 	if (pFilter->TrackReceives)
 	{
@@ -874,15 +677,12 @@ Arguments:
 		pFilter->OutstandingRcvs -= NumOfNetBufferLists;
 		Ref = pFilter->OutstandingRcvs;
 		FILTER_LOG_RCV_REF(3, pFilter, NetBufferLists, Ref);
+		
 		FILTER_RELEASE_LOCK(&pFilter->Lock, DispatchLevel);
 	}
 
-
-	DEBUGP(DL_TRACE, "<===ReturnNetBufferLists.\n");
-
-
+	DEBUGP(DL_TRACE, "<=== ReturnNetBufferLists.\n");
 }
-
 
 _Use_decl_annotations_
 VOID
@@ -894,9 +694,7 @@ FilterReceiveNetBufferLists(
 	ULONG               ReceiveFlags
 )
 /*++
-
 Routine Description:
-
 	FilerReceiveNetBufferLists is an optional function for filter drivers.
 	If provided, this function processes receive indications made by underlying
 	NIC or lower level filter drivers. This function  can also be called as a
@@ -908,16 +706,14 @@ Routine Description:
 	indication on its own.
 
 Arguments:
-
 	FilterModuleContext      - our filter context area.
 	NetBufferLists           - a linked list of NetBufferLists
 	PortNumber               - Port on which the receive is indicated
-	ReceiveFlags             -
+	ReceiveFlags             - 
 
 N.B.: It is important to check the ReceiveFlags in NDIS_TEST_RECEIVE_CANNOT_PEND.
 	This controls whether the receive indication is an synchronous or
 	asynchronous function call.
-
 --*/
 {
 
@@ -929,7 +725,7 @@ N.B.: It is important to check the ReceiveFlags in NDIS_TEST_RECEIVE_CANNOT_PEND
 	ULONG               ReturnFlags;
 #endif
 
-	DEBUGP(DL_TRACE, "===>ReceiveNetBufferList: NetBufferLists = %p.\n", NetBufferLists);
+	DEBUGP(DL_TRACE, "===> ReceiveNetBufferList: NetBufferLists = %p.\n", NetBufferLists);
 	do
 	{
 
@@ -1029,40 +825,6 @@ N.B.: It is important to check the ReceiveFlags in NDIS_TEST_RECEIVE_CANNOT_PEND
 	DEBUGP(DL_TRACE, "<===ReceiveNetBufferList: Flags = %8x.\n", ReceiveFlags);
 
 }
-
-
-_Use_decl_annotations_
-VOID
-FilterCancelSendNetBufferLists(
-	NDIS_HANDLE             FilterModuleContext,
-	PVOID                   CancelId
-)
-/*++
-
-Routine Description:
-
-	This function cancels any NET_BUFFER_LISTs pended in the filter and then
-	calls the NdisFCancelSendNetBufferLists to propagate the cancel operation.
-
-	If your driver does not queue any send NBLs, you may omit this routine.
-	NDIS will propagate the cancelation on your behalf more efficiently.
-
-Arguments:
-
-	FilterModuleContext      - our filter context area.
-	CancelId                 - an identifier for all NBLs that should be dequeued
-
-Return Value:
-
-	None
-
-*/
-{
-	PMS_FILTER  pFilter = (PMS_FILTER)FilterModuleContext;
-
-	NdisFCancelSendNetBufferLists(pFilter->FilterHandle, CancelId);
-}
-
 
 _Use_decl_annotations_
 NDIS_STATUS
