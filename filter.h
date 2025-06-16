@@ -257,9 +257,8 @@ typedef struct _FILTER_REQUEST
 //
 typedef struct _MS_FILTER
 {
-    LIST_ENTRY                     FilterModuleLink;
-    //Reference to this filter
-    ULONG                           RefCount;
+    LIST_ENTRY                      FilterModuleLink;
+    ULONG                           RefCount;     //Reference to this filter
 
     NDIS_HANDLE                     FilterHandle;
     NDIS_STRING                     FilterModuleName;
@@ -270,9 +269,10 @@ typedef struct _MS_FILTER
     NDIS_STATUS                     Status;
     NDIS_EVENT                      Event;
     ULONG                           BackFillSize;
-    FILTER_LOCK                     Lock;    // Lock for protection of state and outstanding sends and recvs
 
+    FILTER_LOCK                     Lock;    // Lock for protection of state and outstanding sends and recvs
     FILTER_STATE                    State;   // Which state the filter is in
+
     ULONG                           OutstandingSends;
     ULONG                           OutstandingRequest;
     ULONG                           OutstandingRcvs;
@@ -281,16 +281,10 @@ typedef struct _MS_FILTER
     QUEUE_HEADER                    SendNBLQueue;
     QUEUE_HEADER                    RcvNBLQueue;
 
-
     NDIS_STRING                     FilterName;
     ULONG                           CallsRestart;
     BOOLEAN                         TrackReceives;
     BOOLEAN                         TrackSends;
-#if DBG
-    BOOLEAN                         bIndicating;
-#endif
-
-    PNDIS_OID_REQUEST               PendingOidRequest;
 
 }MS_FILTER, * PMS_FILTER;
 
@@ -329,42 +323,20 @@ EXTERN_C_START
 
 DRIVER_INITIALIZE DriverEntry;
 
-FILTER_SET_OPTIONS FilterRegisterOptions;
-
 FILTER_ATTACH FilterAttach;
-
 FILTER_DETACH FilterDetach;
-
 DRIVER_UNLOAD FilterUnload;
-
 FILTER_RESTART FilterRestart;
-
 FILTER_PAUSE FilterPause;
 
-FILTER_OID_REQUEST FilterOidRequest;
-
-FILTER_CANCEL_OID_REQUEST FilterCancelOidRequest;
-
-FILTER_STATUS FilterStatus;
-
-FILTER_DEVICE_PNP_EVENT_NOTIFY FilterDevicePnPEventNotify;
-
-FILTER_NET_PNP_EVENT FilterNetPnPEvent;
-
-FILTER_OID_REQUEST_COMPLETE FilterOidRequestComplete;
-
-FILTER_SEND_NET_BUFFER_LISTS FilterSendNetBufferLists;
-
-FILTER_RETURN_NET_BUFFER_LISTS FilterReturnNetBufferLists;
-
-FILTER_SEND_NET_BUFFER_LISTS_COMPLETE FilterSendNetBufferListsComplete;
-
-FILTER_RECEIVE_NET_BUFFER_LISTS FilterReceiveNetBufferLists;
-
-FILTER_CANCEL_SEND_NET_BUFFER_LISTS FilterCancelSendNetBufferLists;
-
+FILTER_SET_OPTIONS FilterRegisterOptions;
 FILTER_SET_MODULE_OPTIONS FilterSetModuleOptions;
 
+FILTER_SEND_NET_BUFFER_LISTS FilterSendNetBufferLists;
+FILTER_RETURN_NET_BUFFER_LISTS FilterReturnNetBufferLists;
+FILTER_SEND_NET_BUFFER_LISTS_COMPLETE FilterSendNetBufferListsComplete;
+FILTER_RECEIVE_NET_BUFFER_LISTS FilterReceiveNetBufferLists;
+FILTER_CANCEL_SEND_NET_BUFFER_LISTS FilterCancelSendNetBufferLists;
 
 _IRQL_requires_max_(PASSIVE_LEVEL)
 NDIS_STATUS
