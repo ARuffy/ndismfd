@@ -252,13 +252,10 @@ typedef struct _FILTER_REQUEST
     NDIS_STATUS            Status;
 } FILTER_REQUEST, *PFILTER_REQUEST;
 
-//
-// Define the filter struct
-//
 typedef struct _MS_FILTER
 {
     LIST_ENTRY                      FilterModuleLink;
-    ULONG                           RefCount;     //Reference to this filter
+    ULONG                           RefCount;     // Reference to this filter
 
     NDIS_HANDLE                     FilterHandle;
     NDIS_STRING                     FilterModuleName;
@@ -267,22 +264,14 @@ typedef struct _MS_FILTER
     NET_IFINDEX                     MiniportIfIndex;
 
     NDIS_STATUS                     Status;
-    NDIS_EVENT                      Event;
-    ULONG                           BackFillSize;
 
     FILTER_LOCK                     Lock;    // Lock for protection of state and outstanding sends and recvs
     FILTER_STATE                    State;   // Which state the filter is in
 
     ULONG                           OutstandingRcvs;
-    FILTER_LOCK                     SendLock;
-    FILTER_LOCK                     RcvLock;
-    QUEUE_HEADER                    SendNBLQueue;
-    QUEUE_HEADER                    RcvNBLQueue;
 
     NDIS_STRING                     FilterName;
-    ULONG                           CallsRestart;
     BOOLEAN                         TrackReceives;
-    BOOLEAN                         TrackSends;
 
 }MS_FILTER, * PMS_FILTER;
 
@@ -328,7 +317,6 @@ FILTER_RESTART FilterRestart;
 FILTER_PAUSE FilterPause;
 
 FILTER_SET_OPTIONS FilterRegisterOptions;
-FILTER_SET_MODULE_OPTIONS FilterSetModuleOptions;
 
 FILTER_RETURN_NET_BUFFER_LISTS FilterReturnNetBufferLists;
 FILTER_RECEIVE_NET_BUFFER_LISTS FilterReceiveNetBufferLists;
@@ -370,14 +358,6 @@ filterDoInternalRequest(
     _In_ ULONG                        MethodId,
     _Out_ PULONG                      pBytesProcessed
     );
-
-VOID
-filterInternalRequestComplete(
-    _In_ NDIS_HANDLE                  FilterModuleContext,
-    _In_ PNDIS_OID_REQUEST            NdisRequest,
-    _In_ NDIS_STATUS                  Status
-    );
-
 EXTERN_C_END
 
 #endif  //_FILT_H

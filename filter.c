@@ -106,7 +106,7 @@ Return Value:
 		FChars.DetachHandler = FilterDetach;
 		FChars.RestartHandler = FilterRestart;
 		FChars.PauseHandler = FilterPause;
-		FChars.SetFilterModuleOptionsHandler = FilterSetModuleOptions;
+		FChars.SetFilterModuleOptionsHandler = NULL;
 
 		// OID request handlers
 		FChars.OidRequestHandler = NULL;
@@ -154,7 +154,7 @@ Return Value:
 	} while (bFalse);
 
 
-	DEBUGP(DL_TRACE, "<=== DriverEntry, Status = %8x\n", Status);
+	DEBUGP(DL_TRACE, "<=== DriverEntry, Status = %x\n", Status);
 	return Status;
 }
 
@@ -305,14 +305,8 @@ N.B.:  FILTER can use NdisRegisterDeviceEx to create a device, so the upper
 
 		pFilter->MiniportIfIndex = AttachParameters->BaseMiniportIfIndex;
 
-		//
-		// The filter should initialize TrackReceives and TrackSends properly. For this
-		// driver, since its default characteristic has both a send and a receive handler,
-		// these fields are initialized to TRUE.
 		pFilter->TrackReceives = TRUE;
-		pFilter->TrackSends = TRUE;
 		pFilter->FilterHandle = NdisFilterHandle;
-
 
 		NdisZeroMemory(&FilterAttributes, sizeof(NDIS_FILTER_ATTRIBUTES));
 		FilterAttributes.Header.Revision = NDIS_FILTER_ATTRIBUTES_REVISION_1;
@@ -677,7 +671,7 @@ Arguments:
 		pFilter->OutstandingRcvs -= NumOfNetBufferLists;
 		Ref = pFilter->OutstandingRcvs;
 		FILTER_LOG_RCV_REF(3, pFilter, NetBufferLists, Ref);
-		
+
 		FILTER_RELEASE_LOCK(&pFilter->Lock, DispatchLevel);
 	}
 
@@ -709,7 +703,7 @@ Arguments:
 	FilterModuleContext      - our filter context area.
 	NetBufferLists           - a linked list of NetBufferLists
 	PortNumber               - Port on which the receive is indicated
-	ReceiveFlags             - 
+	ReceiveFlags             -
 
 N.B.: It is important to check the ReceiveFlags in NDIS_TEST_RECEIVE_CANNOT_PEND.
 	This controls whether the receive indication is an synchronous or
@@ -728,7 +722,6 @@ N.B.: It is important to check the ReceiveFlags in NDIS_TEST_RECEIVE_CANNOT_PEND
 	DEBUGP(DL_TRACE, "===> ReceiveNetBufferList: NetBufferLists = %p.\n", NetBufferLists);
 	do
 	{
-
 		DispatchLevel = NDIS_TEST_RECEIVE_AT_DISPATCH_LEVEL(ReceiveFlags);
 #if DBG
 		FILTER_ACQUIRE_LOCK(&pFilter->Lock, DispatchLevel);
@@ -822,106 +815,8 @@ N.B.: It is important to check the ReceiveFlags in NDIS_TEST_RECEIVE_CANNOT_PEND
 
 	} while (bFalse);
 
-	DEBUGP(DL_TRACE, "<===ReceiveNetBufferList: Flags = %8x.\n", ReceiveFlags);
+	DEBUGP(DL_TRACE, "<=== ReceiveNetBufferList: Flags = 0x%8x.\n", ReceiveFlags);
 
-}
-
-_Use_decl_annotations_
-NDIS_STATUS
-FilterSetModuleOptions(
-	NDIS_HANDLE             FilterModuleContext
-)
-/*++
-
-Routine Description:
-	This function set the optional handlers for the filter
-
-Arguments:
-	FilterModuleContext: The FilterModuleContext given to NdisFSetAttributes
-
-Return Value:
-
-	NDIS_STATUS_SUCCESS
-	NDIS_STATUS_RESOURCES
-	NDIS_STATUS_FAILURE
-
---*/
-{
-	PMS_FILTER                               pFilter = (PMS_FILTER)FilterModuleContext;
-	NDIS_FILTER_PARTIAL_CHARACTERISTICS      OptionalHandlers;
-	NDIS_STATUS                              Status = NDIS_STATUS_SUCCESS;
-	BOOLEAN                                  bFalse = FALSE;
-
-	DEBUGP(DL_TRACE, "===> FilterSetModuleOptions\n");
-
-	//
-	// Demonstrate how to change send/receive handlers at runtime.
-	//
-	if (bFalse)
-	{
-		UINT      i;
-
-		pFilter->CallsRestart++;
-
-		i = pFilter->CallsRestart % 8;
-
-		pFilter->TrackReceives = TRUE;
-		pFilter->TrackSends = TRUE;
-
-		NdisMoveMemory(&OptionalHandlers, &DefaultChars, sizeof(OptionalHandlers));
-		OptionalHandlers.Header.Type = NDIS_OBJECT_TYPE_FILTER_PARTIAL_CHARACTERISTICS;
-		OptionalHandlers.Header.Size = sizeof(OptionalHandlers);
-		switch (i)
-		{
-
-		case 0:
-			OptionalHandlers.ReceiveNetBufferListsHandler = NULL;
-			pFilter->TrackReceives = FALSE;
-			break;
-
-		case 1:
-
-			OptionalHandlers.ReturnNetBufferListsHandler = NULL;
-			pFilter->TrackReceives = FALSE;
-			break;
-
-		case 2:
-			OptionalHandlers.SendNetBufferListsHandler = NULL;
-			pFilter->TrackSends = FALSE;
-			break;
-
-		case 3:
-			OptionalHandlers.SendNetBufferListsCompleteHandler = NULL;
-			pFilter->TrackSends = FALSE;
-			break;
-
-		case 4:
-			OptionalHandlers.ReceiveNetBufferListsHandler = NULL;
-			OptionalHandlers.ReturnNetBufferListsHandler = NULL;
-			break;
-
-		case 5:
-			OptionalHandlers.SendNetBufferListsHandler = NULL;
-			OptionalHandlers.SendNetBufferListsCompleteHandler = NULL;
-			break;
-
-		case 6:
-
-			OptionalHandlers.ReceiveNetBufferListsHandler = NULL;
-			OptionalHandlers.ReturnNetBufferListsHandler = NULL;
-			OptionalHandlers.SendNetBufferListsHandler = NULL;
-			OptionalHandlers.SendNetBufferListsCompleteHandler = NULL;
-			break;
-
-		case 7:
-			break;
-		}
-		Status = NdisSetOptionalHandlers(pFilter->FilterHandle, (PNDIS_DRIVER_OPTIONAL_HANDLERS)&OptionalHandlers);
-	}
-
-	DEBUGP(DL_TRACE, "<=== FilterSetModuleOptions:\tStatus %x\n", Status);
-
-	return Status;
 }
 
 _IRQL_requires_max_(DISPATCH_LEVEL)
@@ -1076,49 +971,3 @@ Return Value:
 
 	return Status;
 }
-
-VOID
-filterInternalRequestComplete(
-	_In_ NDIS_HANDLE                  FilterModuleContext,
-	_In_ PNDIS_OID_REQUEST            NdisRequest,
-	_In_ NDIS_STATUS                  Status
-)
-/*++
-
-Routine Description:
-
-	NDIS entry point indicating completion of a pended NDIS_OID_REQUEST.
-
-Arguments:
-
-	FilterModuleContext - pointer to filter module context
-	NdisRequest - pointer to NDIS request
-	Status - status of request completion
-
-Return Value:
-
-	None
-
---*/
-{
-	PFILTER_REQUEST              FilterRequest;
-
-
-	UNREFERENCED_PARAMETER(FilterModuleContext);
-
-	//
-	//  Get at the request context.
-	//
-	FilterRequest = CONTAINING_RECORD(NdisRequest, FILTER_REQUEST, Request);
-
-	//
-	//  Save away the completion status.
-	//
-	FilterRequest->Status = Status;
-
-	//
-	//  Wake up the thread blocked for this request to complete.
-	//
-	NdisSetEvent(&FilterRequest->ReqEvent);
-}
-
