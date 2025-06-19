@@ -119,6 +119,9 @@ ULONG_PTR    filterLogSendRef[0x10000];
 #define   FILTER_LOG_SEND_REF(_O, _Instance, _NetBufferList, _Ref)
 #endif
 
+#define FILTER_MEMORY_ALIGNMENT(_Bytes) \
+    (((_Bytes) + (MEMORY_ALLOCATION_ALIGNMENT - 1)) & ~(MEMORY_ALLOCATION_ALIGNMENT - 1))
+
 
 //
 // DEBUG related macros.
@@ -272,6 +275,10 @@ typedef struct _MS_FILTER
 
     NDIS_STRING                     FilterName;
     BOOLEAN                         TrackReceives;
+
+    // NBL Pool
+    NDIS_HANDLE NetBufferPool;
+	NDIS_HANDLE NetBufferListPool;
 
 }MS_FILTER, * PMS_FILTER;
 

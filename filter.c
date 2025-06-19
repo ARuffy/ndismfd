@@ -198,6 +198,75 @@ Return Value:
 	return NDIS_STATUS_SUCCESS;
 }
 
+VOID _FreeFilterNetPools(PMS_FILTER pFilter)
+{
+	DEBUGP(DL_TRACE, "===> _FreeFilterNetPools: pFilter %p\n", pFilter);
+
+	if (pFilter->NetBufferListPool != NULL)
+	{
+		NdisFreeNetBufferListPool(pFilter->NetBufferListPool);
+		pFilter->NetBufferListPool = NULL;
+	}
+	if (pFilter->NetBufferPool != NULL)
+	{
+		NdisFreeNetBufferPool(pFilter->NetBufferPool);
+		pFilter->NetBufferPool = NULL;
+	}
+
+	DEBUGP(DL_TRACE, "<=== _FreeFilterNetPools\n");
+}
+
+NDIS_STATUS _AllocFilterNetPools(PMS_FILTER pFilter)
+{
+	DEBUGP(DL_TRACE, "===> _AllocFilterNetPools: pFilter %p\n", pFilter);
+
+	NDIS_STATUS Status = NDIS_STATUS_SUCCESS;
+	NET_BUFFER_POOL_PARAMETERS PoolParameters;
+	NET_BUFFER_LIST_POOL_PARAMETERS ListPoolParameters;
+
+	do {
+		NdisZeroMemory(&PoolParameters, sizeof(NET_BUFFER_POOL_PARAMETERS));
+		PoolParameters.Header.Type = NDIS_OBJECT_TYPE_DEFAULT;
+		PoolParameters.Header.Revision = NET_BUFFER_POOL_PARAMETERS_REVISION_1;
+		PoolParameters.Header.Size = NDIS_SIZEOF_NET_BUFFER_POOL_PARAMETERS_REVISION_1;
+		PoolParameters.PoolTag = FILTER_ALLOC_TAG;
+		PoolParameters.DataSize = 0;
+
+		pFilter->NetBufferPool = NdisAllocateNetBufferPool(pFilter->FilterHandle, &PoolParameters);
+		if (pFilter->NetBufferPool == NULL)
+		{
+			DEBUGP(DL_ERROR, "Failed to allocate NetBufferPool.\n");
+			Status = NDIS_STATUS_RESOURCES;
+			break;
+		}
+
+		NdisZeroMappedMemory(&ListPoolParameters, sizeof(NET_BUFFER_LIST_POOL_PARAMETERS));
+		ListPoolParameters.Header.Type = NDIS_OBJECT_TYPE_DEFAULT;
+		ListPoolParameters.Header.Revision = NET_BUFFER_LIST_POOL_PARAMETERS_REVISION_1;
+		ListPoolParameters.Header.Size = NDIS_SIZEOF_NET_BUFFER_LIST_POOL_PARAMETERS_REVISION_1;
+		ListPoolParameters.ProtocolId = NDIS_PROTOCOL_ID_DEFAULT;
+		ListPoolParameters.fAllocateNetBuffer = TRUE;
+		ListPoolParameters.ContextSize = FILTER_MEMORY_ALIGNMENT(sizeof(NET_BUFFER_LIST_CONTEXT));
+		ListPoolParameters.PoolTag = FILTER_ALLOC_TAG;
+		ListPoolParameters.DataSize = 1500 + 14 + 4; // Ethernet TODO: Dynamic Allocation
+
+		pFilter->NetBufferListPool = NdisAllocateNetBufferListPool(pFilter->FilterHandle, &ListPoolParameters);
+		if (pFilter->NetBufferListPool == NULL)
+		{
+			DEBUGP(DL_ERROR, "Failed to allocate NetBufferListPool.\n");
+			Status = NDIS_STATUS_RESOURCES;
+			break;
+		}
+	} while (FALSE);
+
+	if (Status != NDIS_STATUS_SUCCESS)
+	{
+		_FreeFilterNetPools(pFilter);
+	}
+
+	DEBUGP(DL_TRACE, "<=== _AllocFilterNetPools: Status %x\n", Status);
+	return Status;
+}
 
 _Use_decl_annotations_
 NDIS_STATUS
@@ -207,24 +276,19 @@ FilterAttach(
 	PNDIS_FILTER_ATTACH_PARAMETERS  AttachParameters
 )
 /*++
-
 Routine Description:
-
 	Filter attach routine.
 	Create filter's context, allocate NetBufferLists and NetBuffer pools and any
 	other resources, and read configuration if needed.
 
 Arguments:
-
 	NdisFilterHandle - Specify a handle identifying this instance of the filter. FilterAttach
 					   should save this handle. It is a required  parameter in subsequent calls
 					   to NdisFxxx functions.
 	FilterDriverContext - Filter driver context passed to NdisFRegisterFilterDriver.
-
 	AttachParameters - attach parameters
 
 Return Value:
-
 	NDIS_STATUS_SUCCESS: FilterAttach successfully allocated and initialize data structures
 						 for this filter instance.
 	NDIS_STATUS_RESOURCES: FilterAttach failed due to insufficient resources.
@@ -321,6 +385,12 @@ N.B.:  FILTER can use NdisRegisterDeviceEx to create a device, so the upper
 		if (Status != NDIS_STATUS_SUCCESS)
 		{
 			DEBUGP(DL_WARN, "Failed to set attributes.\n");
+			break;
+		}
+
+		Status = _AllocFilterNetPools(pFilter);
+		if (Status != NDIS_STATUS_SUCCESS) {
+			DEBUGP(DL_WARN, "Failed to initialize filter pools.\n");
 			break;
 		}
 
@@ -512,13 +582,11 @@ FilterDetach(
 /*++
 
 Routine Description:
-
 	Filter detach routine.
 	This is a required function that will deallocate all the resources allocated during
 	FilterAttach. NDIS calls FilterAttach to remove a filter instance from a filter stack.
 
 Arguments:
-
 	FilterModuleContext - pointer to the filter context area.
 
 Return Value:
@@ -536,13 +604,13 @@ NOTE: Called at PASSIVE_LEVEL and the filter is in paused state
 	FILTER_ASSERT(pFilter->State == FilterPaused);
 
 	// @NOTE: Detach must not fail, so do not put any code here that can possibly fail.
-
+	// @TODO: Check if we need to free other Buffers?
 	if (pFilter->FilterName.Buffer != NULL)
 	{
 		FILTER_FREE_MEM(pFilter->FilterName.Buffer);
 	}
 
-	// @TODO: Check if we need to free other Buffers?
+	_FreeFilterNetPools(pFilter);
 
 	FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
 	RemoveEntryList(&pFilter->FilterModuleLink);
@@ -595,10 +663,9 @@ Arguments:
 
 	FILTER_FREE_LOCK(&FilterListLock);
 
-	DEBUGP(DL_TRACE, "<===FilterUnload\n");
+	DEBUGP(DL_TRACE, "<=== FilterUnload\n");
 
 	return;
-
 }
 
 _Use_decl_annotations_
