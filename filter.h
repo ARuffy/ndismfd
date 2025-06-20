@@ -232,6 +232,19 @@ ULONG_PTR    filterLogSendRef[0x10000];
     }
 
 
+#define TIMER_RELATIVE(wait) (-(wait))
+#define NANOSECONDS(nanos) \
+(((signed __int64)(nanos)) / 100L)
+
+#define MICROSECONDS(micros) \
+(((signed __int64)(micros)) * NANOSECONDS(1000L))
+
+#define MILLISECONDS(milli) \
+(((signed __int64)(milli)) * MICROSECONDS(1000L))
+
+#define SECONDS(seconds) \
+(((signed __int64)(seconds)) * MILLISECONDS(1000L))
+
 //
 // Enum of filter's states
 // Filter can only be in one state at one time
@@ -329,6 +342,8 @@ FILTER_SET_OPTIONS FilterRegisterOptions;
 
 FILTER_RETURN_NET_BUFFER_LISTS FilterReturnNetBufferLists;
 FILTER_RECEIVE_NET_BUFFER_LISTS FilterReceiveNetBufferLists;
+
+VOID FilterThreadRoutine(_In_ PVOID ThreadContext);
 
 _IRQL_requires_max_(PASSIVE_LEVEL)
 NDIS_STATUS

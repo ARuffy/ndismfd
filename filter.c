@@ -31,6 +31,10 @@ PDEVICE_OBJECT      NdisDeviceObject = NULL;
 FILTER_LOCK         FilterListLock;
 LIST_ENTRY          FilterModuleList;
 
+// Thread
+HANDLE FilterThreadHandle = NULL;
+KEVENT FilterThreadStopEvent;
+
 NDIS_FILTER_PARTIAL_CHARACTERISTICS DefaultChars = {
 { 0, 0, 0},
 	  0,
@@ -198,7 +202,7 @@ Return Value:
 	return NDIS_STATUS_SUCCESS;
 }
 
-VOID _FreeFilterNetPools(PMS_FILTER pFilter)
+static VOID _FreeFilterNetPools(PMS_FILTER pFilter)
 {
 	DEBUGP(DL_TRACE, "===> _FreeFilterNetPools: pFilter %p\n", pFilter);
 
@@ -216,7 +220,7 @@ VOID _FreeFilterNetPools(PMS_FILTER pFilter)
 	DEBUGP(DL_TRACE, "<=== _FreeFilterNetPools\n");
 }
 
-NDIS_STATUS _AllocFilterNetPools(PMS_FILTER pFilter)
+static NDIS_STATUS _AllocFilterNetPools(PMS_FILTER pFilter)
 {
 	DEBUGP(DL_TRACE, "===> _AllocFilterNetPools: pFilter %p\n", pFilter);
 
@@ -268,6 +272,76 @@ NDIS_STATUS _AllocFilterNetPools(PMS_FILTER pFilter)
 	return Status;
 }
 
+static NTSTATUS
+_StartFilterThread(
+	_In_ PMS_FILTER pFilter
+) {
+	NTSTATUS Status = STATUS_SUCCESS;
+
+	DEBUGP(DL_TRACE, "===> _StartFilterThread: pFilter %p\n", pFilter);
+
+	KeInitializeEvent(&FilterThreadStopEvent, NotificationEvent, FALSE);
+
+	Status = PsCreateSystemThread(
+		&FilterThreadHandle,       // Handle to the thread
+		THREAD_ALL_ACCESS,     // Access mask
+		NULL,                  // Object attributes
+		NULL,                  // Process handle
+		NULL,                  // Client ID
+		FilterThreadRoutine,         // Start routine
+		(PVOID)&pFilter                   // Start context
+	);
+
+	if (!NT_SUCCESS(Status))
+	{
+		DEBUGP(DL_ERROR, "Failed to create filter thread. Status %x\n", Status);
+		FilterThreadHandle = NULL;
+	}
+
+	DEBUGP(DL_TRACE, "<=== _StartFilterThread: Status %x\n", Status);
+	return Status;
+}
+
+static VOID
+_StopFilterThread() {
+	NTSTATUS Status;
+	PKTHREAD FilterThreadObject = NULL;
+
+	DEBUGP(DL_TRACE, "===> _StopFilterThread\n");
+
+	if (FilterThreadObject)
+	{
+		Status = ObReferenceObjectByHandle(
+			FilterThreadHandle,
+			THREAD_ALL_ACCESS,
+			*PsThreadType,
+			KernelMode,
+			(PVOID*)&FilterThreadObject,
+			NULL
+		);
+
+		KeSetEvent(&FilterThreadStopEvent, IO_NO_INCREMENT, FALSE);
+
+		if (Status == STATUS_SUCCESS) {
+			KeWaitForSingleObject(
+				FilterThreadObject,
+				Executive,
+				KernelMode,
+				FALSE,
+				NULL
+			);
+
+			ObDereferenceObject(FilterThreadObject);
+			FilterThreadObject = NULL;
+		}
+
+		ZwClose(FilterThreadHandle);
+		FilterThreadHandle = NULL;
+	}
+
+	DEBUGP(DL_TRACE, "<=== _StopFilterThread\n");
+}
+
 _Use_decl_annotations_
 NDIS_STATUS
 FilterAttach(
@@ -305,6 +379,7 @@ N.B.:  FILTER can use NdisRegisterDeviceEx to create a device, so the upper
 	NDIS_FILTER_ATTRIBUTES  FilterAttributes;
 	ULONG                   Size;
 	BOOLEAN                 bFalse = FALSE;
+	NTSTATUS NtStatus;
 
 	DEBUGP(DL_TRACE, "===> FilterAttach: NdisFilterHandle %p\n", NdisFilterHandle);
 
@@ -394,6 +469,12 @@ N.B.:  FILTER can use NdisRegisterDeviceEx to create a device, so the upper
 			break;
 		}
 
+		NtStatus = _StartFilterThread(pFilter);
+		if (!NT_SUCCESS(NtStatus)) {
+			DEBUGP(DL_WARN, "Failed to start filter thread.\n");
+			break;
+		}
+
 		InitializeQueueHeader(&pFilter->NetBufferQueue);
 
 		pFilter->State = FilterPaused;
@@ -408,6 +489,7 @@ N.B.:  FILTER can use NdisRegisterDeviceEx to create a device, so the upper
 	{
 		if (pFilter != NULL)
 		{
+			_FreeFilterNetPools(pFilter);
 			FILTER_FREE_MEM(pFilter);
 		}
 	}
@@ -612,6 +694,7 @@ NOTE: Called at PASSIVE_LEVEL and the filter is in paused state
 		FILTER_FREE_MEM(pFilter->FilterName.Buffer);
 	}
 
+	_StopFilterThread();
 	_FreeFilterNetPools(pFilter);
 
 	FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
@@ -1057,4 +1140,31 @@ Return Value:
 
 
 	return Status;
+}
+VOID FilterThreadRoutine(_In_ PVOID ThreadContext)
+{
+	PMS_FILTER          pFilter = (PMS_FILTER)ThreadContext;
+	//BOOLEAN             DispatchLevel = FALSE;
+	NTSTATUS Status;
+	LARGE_INTEGER SleepTime;
+
+	DEBUGP(DL_TRACE, "===> FilterThreadRoutine: pFilter %p\n", pFilter);
+
+	NdisZeroMemory(&SleepTime, sizeof(LARGE_INTEGER));
+	SleepTime.QuadPart = TIMER_RELATIVE(MILLISECONDS(250));
+	while (TRUE)
+	{
+		Status = KeWaitForSingleObject(&FilterThreadStopEvent, Executive, KernelMode, FALSE, NULL);
+
+		if (Status == STATUS_SUCCESS)
+		{
+			DEBUGP(DL_TRACE, "FilterThreadRoutine: Stop event signaled.\n");
+			break;
+		}
+
+		KeDelayExecutionThread(KernelMode, FALSE, &SleepTime);
+	}
+
+	PsTerminateSystemThread(STATUS_SUCCESS);
+	DEBUGP(DL_TRACE, "<=== FilterThreadRoutine\n");
 }
