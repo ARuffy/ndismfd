@@ -280,6 +280,8 @@ typedef struct _MS_FILTER
     NDIS_HANDLE NetBufferPool;
 	NDIS_HANDLE NetBufferListPool;
 
+    QUEUE_HEADER NetBufferQueue;
+
 }MS_FILTER, * PMS_FILTER;
 
 

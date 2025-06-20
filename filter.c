@@ -245,10 +245,10 @@ NDIS_STATUS _AllocFilterNetPools(PMS_FILTER pFilter)
 		ListPoolParameters.Header.Revision = NET_BUFFER_LIST_POOL_PARAMETERS_REVISION_1;
 		ListPoolParameters.Header.Size = NDIS_SIZEOF_NET_BUFFER_LIST_POOL_PARAMETERS_REVISION_1;
 		ListPoolParameters.ProtocolId = NDIS_PROTOCOL_ID_DEFAULT;
-		ListPoolParameters.fAllocateNetBuffer = TRUE;
+		ListPoolParameters.fAllocateNetBuffer = FALSE; //  TRUE;
 		ListPoolParameters.ContextSize = FILTER_MEMORY_ALIGNMENT(sizeof(NET_BUFFER_LIST_CONTEXT));
 		ListPoolParameters.PoolTag = FILTER_ALLOC_TAG;
-		ListPoolParameters.DataSize = 1500 + 14 + 4; // Ethernet TODO: Dynamic Allocation
+		ListPoolParameters.DataSize = 0; // 1500 + 14 + 4; // Ethernet TODO: Dynamic Allocation
 
 		pFilter->NetBufferListPool = NdisAllocateNetBufferListPool(pFilter->FilterHandle, &ListPoolParameters);
 		if (pFilter->NetBufferListPool == NULL)
@@ -394,6 +394,8 @@ N.B.:  FILTER can use NdisRegisterDeviceEx to create a device, so the upper
 			break;
 		}
 
+		InitializeQueueHeader(&pFilter->NetBufferQueue);
+
 		pFilter->State = FilterPaused;
 
 		FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
@@ -478,7 +480,7 @@ N.B.: When the filter is in Pausing state, it can still process OID requests,
 
 	pFilter->State = FilterPaused;
 
-	DEBUGP(DL_TRACE, "<===FilterPause:  Status %x\n", Status);
+	DEBUGP(DL_TRACE, "<=== FilterPause:  Status %x\n", Status);
 	return Status;
 }
 
@@ -698,6 +700,7 @@ Arguments:
 {
 	PMS_FILTER          pFilter = (PMS_FILTER)FilterModuleContext;
 	PNET_BUFFER_LIST    CurrNbl = NetBufferLists;
+	PNET_BUFFER_LIST    NextNbl = NULL;
 	UINT                NumOfNetBufferLists = 0;
 	BOOLEAN             DispatchLevel;
 	ULONG               Ref;
@@ -720,15 +723,16 @@ Arguments:
 		while (CurrNbl)
 		{
 			NumOfNetBufferLists++;
-			CurrNbl = NET_BUFFER_LIST_NEXT_NBL(CurrNbl);
+			NextNbl = NET_BUFFER_LIST_NEXT_NBL(CurrNbl);
+			NET_BUFFER_LIST_NEXT_NBL(CurrNbl) = NULL;
+			NdisFreeCloneNetBufferList(CurrNbl, 0);
+			CurrNbl = NextNbl;
 		}
 	}
 
-
 	// Return the received NBLs.  If you removed any NBLs from the chain, make
 	// sure the chain isn't empty (i.e., NetBufferLists!=NULL).
-
-	NdisFReturnNetBufferLists(pFilter->FilterHandle, NetBufferLists, ReturnFlags);
+	DEBUGP(DL_TRACE, "<<< Return NBLs number = %d\n", NumOfNetBufferLists);
 
 	if (pFilter->TrackReceives)
 	{
@@ -782,14 +786,16 @@ N.B.: It is important to check the ReceiveFlags in NDIS_TEST_RECEIVE_CANNOT_PEND
 	BOOLEAN             DispatchLevel;
 	ULONG               Ref;
 	BOOLEAN             bFalse = FALSE;
+	PNET_BUFFER_LIST    CurrNbl = NULL;
+	PNET_BUFFER_LIST    DupNbl = NULL;
 #if DBG
 	ULONG               ReturnFlags;
 #endif
 
-	DEBUGP(DL_TRACE, "===> ReceiveNetBufferList: NetBufferLists = %p.\n", NetBufferLists);
+	DispatchLevel = NDIS_TEST_RECEIVE_AT_DISPATCH_LEVEL(ReceiveFlags);
+	DEBUGP(DL_TRACE, "===> ReceiveNetBufferList: NetBufferLists = %p DispatchLevel = %i.\n", NetBufferLists, DispatchLevel);
 	do
 	{
-		DispatchLevel = NDIS_TEST_RECEIVE_AT_DISPATCH_LEVEL(ReceiveFlags);
 #if DBG
 		FILTER_ACQUIRE_LOCK(&pFilter->Lock, DispatchLevel);
 
@@ -862,12 +868,25 @@ N.B.: It is important to check the ReceiveFlags in NDIS_TEST_RECEIVE_CANNOT_PEND
 			FILTER_RELEASE_LOCK(&pFilter->Lock, DispatchLevel);
 		}
 
-		NdisFIndicateReceiveNetBufferLists(
-			pFilter->FilterHandle,
-			NetBufferLists,
-			PortNumber,
-			NumberOfNetBufferLists,
-			ReceiveFlags);
+		CurrNbl = NetBufferLists;
+		while (CurrNbl != NULL)
+		{
+			// TODO: Check if applicable NDIS_CLONE_FLAGS_USE_ORIGINAL_MDLS
+			DupNbl = NdisAllocateCloneNetBufferList(CurrNbl, pFilter->NetBufferListPool, 0, 0);
+			ASSERT(DupNbl);
+			if (DupNbl) {
+				InsertTailQueue(&pFilter->NetBufferQueue, DupNbl);
+				CurrNbl = NET_BUFFER_LIST_NEXT_NBL(CurrNbl);
+			}
+
+			// FIXME: Add error handling
+		}
+
+		NdisFReturnNetBufferLists(pFilter->FilterHandle, NetBufferLists, 0);
+
+		DEBUGP(DL_TRACE, ">>> Indicate COPIED NBLs number = %d\n", NumberOfNetBufferLists);
+		DupNbl = (PNET_BUFFER_LIST)(pFilter->NetBufferQueue.Head);
+		NdisFIndicateReceiveNetBufferLists(pFilter->FilterHandle, DupNbl, PortNumber, NumberOfNetBufferLists, ReceiveFlags);
 
 
 		if (NDIS_TEST_RECEIVE_CANNOT_PEND(ReceiveFlags) &&
