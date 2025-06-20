@@ -289,7 +289,7 @@ _StartFilterThread(
 		NULL,                  // Process handle
 		NULL,                  // Client ID
 		FilterThreadRoutine,         // Start routine
-		(PVOID)&pFilter                   // Start context
+		(PVOID)pFilter                   // Start context
 	);
 
 	if (!NT_SUCCESS(Status))
@@ -309,7 +309,7 @@ _StopFilterThread() {
 
 	DEBUGP(DL_TRACE, "===> _StopFilterThread\n");
 
-	if (FilterThreadObject)
+	if (FilterThreadHandle)
 	{
 		Status = ObReferenceObjectByHandle(
 			FilterThreadHandle,
@@ -475,8 +475,7 @@ N.B.:  FILTER can use NdisRegisterDeviceEx to create a device, so the upper
 			break;
 		}
 
-		InitializeQueueHeader(&pFilter->NetBufferQueue);
-
+		pFilter->NetBufferQueue = NULL;
 		pFilter->State = FilterPaused;
 
 		FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
@@ -871,6 +870,7 @@ N.B.: It is important to check the ReceiveFlags in NDIS_TEST_RECEIVE_CANNOT_PEND
 	BOOLEAN             bFalse = FALSE;
 	PNET_BUFFER_LIST    CurrNbl = NULL;
 	PNET_BUFFER_LIST    DupNbl = NULL;
+	MFD_PQUEUE          pFilterQueue;
 #if DBG
 	ULONG               ReturnFlags;
 #endif
@@ -951,27 +951,47 @@ N.B.: It is important to check the ReceiveFlags in NDIS_TEST_RECEIVE_CANNOT_PEND
 			FILTER_RELEASE_LOCK(&pFilter->Lock, DispatchLevel);
 		}
 
+		pFilterQueue = (MFD_PQUEUE)FILTER_ALLOC_MEM(pFilter->FilterHandle, sizeof(MFD_QUEUE));
+		NdisZeroMemory(pFilterQueue, sizeof(MFD_QUEUE));
+		ASSERT(pFilterQueue); // FIXME: Add error handling
+		InitializeQueueHeader(&pFilterQueue->NetBufferQueue);
+		pFilterQueue->PortNumber = PortNumber;
+		pFilterQueue->ReceiveFlags = ReceiveFlags;
+		pFilterQueue->NumberOfNetBufferLists = 0;
+		pFilterQueue->Next = pFilterQueue->Tail = NULL;
+
 		CurrNbl = NetBufferLists;
-		InitializeQueueHeader(&pFilter->NetBufferQueue);
 		while (CurrNbl != NULL)
 		{
 			// TODO: Check if applicable NDIS_CLONE_FLAGS_USE_ORIGINAL_MDLS
 			DupNbl = NdisAllocateCloneNetBufferList(CurrNbl, pFilter->NetBufferListPool, 0, 0);
 			ASSERT(DupNbl);
 			if (DupNbl) {
-				InsertTailQueue(&pFilter->NetBufferQueue, DupNbl);
+				InsertTailQueue(&pFilterQueue->NetBufferQueue, DupNbl);
+				pFilterQueue->NumberOfNetBufferLists++;
+
 				CurrNbl = NET_BUFFER_LIST_NEXT_NBL(CurrNbl);
 			}
-
 			// FIXME: Add error handling
 		}
 
 		NdisFReturnNetBufferLists(pFilter->FilterHandle, NetBufferLists, 0);
 
-		DEBUGP(DL_TRACE, ">>> Indicate COPIED NBLs number = %d\n", NumberOfNetBufferLists);
-		DupNbl = (PNET_BUFFER_LIST)(pFilter->NetBufferQueue.Head);
-		NdisFIndicateReceiveNetBufferLists(pFilter->FilterHandle, DupNbl, PortNumber, NumberOfNetBufferLists, ReceiveFlags);
-
+		DEBUGP(DL_TRACE, "+++ Queue COPIED NBLs, number = %d\n", NumberOfNetBufferLists);
+		FILTER_ACQUIRE_LOCK(&pFilter->Lock, DispatchLevel);
+		if (pFilter->NetBufferQueue) {
+			if (pFilter->NetBufferQueue->Tail)
+				pFilter->NetBufferQueue->Tail->Next = pFilterQueue;
+			else
+				pFilter->NetBufferQueue->Next = pFilterQueue;
+			pFilter->NetBufferQueue->Tail = pFilterQueue;
+		}
+		else
+		{
+			pFilter->NetBufferQueue = pFilterQueue;
+		}
+		// NdisFIndicateReceiveNetBufferLists(pFilter->FilterHandle, DupNbl, PortNumber, NumberOfNetBufferLists, ReceiveFlags);
+		FILTER_RELEASE_LOCK(&pFilter->Lock, DispatchLevel);
 
 		if (NDIS_TEST_RECEIVE_CANNOT_PEND(ReceiveFlags) &&
 			pFilter->TrackReceives)
@@ -1144,27 +1164,53 @@ Return Value:
 VOID FilterThreadRoutine(_In_ PVOID ThreadContext)
 {
 	PMS_FILTER          pFilter = (PMS_FILTER)ThreadContext;
-	//BOOLEAN             DispatchLevel = FALSE;
-	NTSTATUS Status;
-	LARGE_INTEGER SleepTime;
+	BOOLEAN             DispatchLevel = FALSE;
+	NTSTATUS            Status;
+	LARGE_INTEGER       SleepTime;
+	MFD_PQUEUE          pQueue = NULL;
 
 	DEBUGP(DL_TRACE, "===> FilterThreadRoutine: pFilter %p\n", pFilter);
 
 	NdisZeroMemory(&SleepTime, sizeof(LARGE_INTEGER));
-	SleepTime.QuadPart = TIMER_RELATIVE(MILLISECONDS(250));
 	while (TRUE)
 	{
-		Status = KeWaitForSingleObject(&FilterThreadStopEvent, Executive, KernelMode, FALSE, NULL);
-
+		SleepTime.QuadPart = 0;
+		Status = KeWaitForSingleObject(&FilterThreadStopEvent, Executive, KernelMode, FALSE, &SleepTime);
 		if (Status == STATUS_SUCCESS)
 		{
 			DEBUGP(DL_TRACE, "FilterThreadRoutine: Stop event signaled.\n");
 			break;
 		}
 
-		KeDelayExecutionThread(KernelMode, FALSE, &SleepTime);
+		FILTER_ACQUIRE_LOCK(&pFilter->Lock, DispatchLevel);
+		pQueue = pFilter->NetBufferQueue;
+		if (pQueue) {
+			if (pQueue->Next)
+				pQueue->Next->Tail = pQueue->Tail;
+
+			pFilter->NetBufferQueue = pQueue->Next;
+			pQueue->Next = NULL;
+		}
+		FILTER_RELEASE_LOCK(&pFilter->Lock, DispatchLevel);
+
+		if (pQueue == NULL) {
+			SleepTime.QuadPart = TIMER_RELATIVE(MILLISECONDS(100));
+			KeDelayExecutionThread(KernelMode, FALSE, &SleepTime);
+			continue;
+		}
+
+		DEBUGP(DL_TRACE, ">>> Indicate COPIED NBLs, number = %d\n", pQueue->NumberOfNetBufferLists);
+		NdisFIndicateReceiveNetBufferLists(pFilter->FilterHandle,
+			(PNET_BUFFER_LIST)(pQueue->NetBufferQueue.Head),
+			pQueue->PortNumber,
+			pQueue->NumberOfNetBufferLists,
+			pQueue->ReceiveFlags);
+
+		FILTER_FREE_MEM(pQueue);
+		pQueue = NULL;
 	}
 
-	PsTerminateSystemThread(STATUS_SUCCESS);
 	DEBUGP(DL_TRACE, "<=== FilterThreadRoutine\n");
+
+	PsTerminateSystemThread(STATUS_SUCCESS);
 }
