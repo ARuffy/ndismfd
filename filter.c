@@ -869,6 +869,7 @@ N.B.: It is important to check the ReceiveFlags in NDIS_TEST_RECEIVE_CANNOT_PEND
 		}
 
 		CurrNbl = NetBufferLists;
+		InitializeQueueHeader(&pFilter->NetBufferQueue);
 		while (CurrNbl != NULL)
 		{
 			// TODO: Check if applicable NDIS_CLONE_FLAGS_USE_ORIGINAL_MDLS
