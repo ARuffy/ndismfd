@@ -475,7 +475,7 @@ N.B.:  FILTER can use NdisRegisterDeviceEx to create a device, so the upper
 			break;
 		}
 
-		pFilter->NetBufferQueue = NULL;
+		InitializeQueueHeader(&pFilter->NetBufferListsQueue);
 		pFilter->State = FilterPaused;
 
 		FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
@@ -870,7 +870,7 @@ N.B.: It is important to check the ReceiveFlags in NDIS_TEST_RECEIVE_CANNOT_PEND
 	BOOLEAN             bFalse = FALSE;
 	PNET_BUFFER_LIST    CurrNbl = NULL;
 	PNET_BUFFER_LIST    DupNbl = NULL;
-	MFD_PQUEUE          pFilterQueue;
+	PFILTER_QUEUE_ENTRY pFilterQueue;
 #if DBG
 	ULONG               ReturnFlags;
 #endif
@@ -951,14 +951,14 @@ N.B.: It is important to check the ReceiveFlags in NDIS_TEST_RECEIVE_CANNOT_PEND
 			FILTER_RELEASE_LOCK(&pFilter->Lock, DispatchLevel);
 		}
 
-		pFilterQueue = (MFD_PQUEUE)FILTER_ALLOC_MEM(pFilter->FilterHandle, sizeof(MFD_QUEUE));
-		NdisZeroMemory(pFilterQueue, sizeof(MFD_QUEUE));
+		pFilterQueue = (FILTER_QUEUE_ENTRY*)FILTER_ALLOC_MEM(pFilter->FilterHandle, sizeof(FILTER_QUEUE_ENTRY));
+		NdisZeroMemory(pFilterQueue, sizeof(FILTER_QUEUE_ENTRY));
 		ASSERT(pFilterQueue); // FIXME: Add error handling
-		InitializeQueueHeader(&pFilterQueue->NetBufferQueue);
+		InitializeQueueHeader(&pFilterQueue->NetBufferLists);
 		pFilterQueue->PortNumber = PortNumber;
 		pFilterQueue->ReceiveFlags = ReceiveFlags;
 		pFilterQueue->NumberOfNetBufferLists = 0;
-		pFilterQueue->Next = pFilterQueue->Tail = NULL;
+		pFilterQueue->Next = NULL;
 
 		CurrNbl = NetBufferLists;
 		while (CurrNbl != NULL)
@@ -967,12 +967,12 @@ N.B.: It is important to check the ReceiveFlags in NDIS_TEST_RECEIVE_CANNOT_PEND
 			DupNbl = NdisAllocateCloneNetBufferList(CurrNbl, pFilter->NetBufferListPool, 0, 0);
 			ASSERT(DupNbl);
 			if (DupNbl) {
-				InsertTailQueue(&pFilterQueue->NetBufferQueue, DupNbl);
+				InsertTailQueue(&pFilterQueue->NetBufferLists, DupNbl);
 				pFilterQueue->NumberOfNetBufferLists++;
 
 				CurrNbl = NET_BUFFER_LIST_NEXT_NBL(CurrNbl);
 			}
-			// FIXME: Add error handling
+			// @FIXME: Add error handling
 		}
 
 		NdisFReturnNetBufferLists(pFilter->FilterHandle, NetBufferLists, 0);
@@ -980,17 +980,7 @@ N.B.: It is important to check the ReceiveFlags in NDIS_TEST_RECEIVE_CANNOT_PEND
 		// Push the cloned NBLs to the filtering queue
 		DEBUGP(DL_TRACE, "+++ Queue COPIED NBLs, number = %d\n", NumberOfNetBufferLists);
 		FILTER_ACQUIRE_LOCK(&pFilter->Lock, DispatchLevel);
-		if (pFilter->NetBufferQueue) {
-			if (pFilter->NetBufferQueue->Tail)
-				pFilter->NetBufferQueue->Tail->Next = pFilterQueue;
-			else
-				pFilter->NetBufferQueue->Next = pFilterQueue;
-			pFilter->NetBufferQueue->Tail = pFilterQueue;
-		}
-		else
-		{
-			pFilter->NetBufferQueue = pFilterQueue;
-		}
+		InsertTailQueue(&pFilter->NetBufferListsQueue, pFilterQueue);
 		FILTER_RELEASE_LOCK(&pFilter->Lock, DispatchLevel);
 
 		if (NDIS_TEST_RECEIVE_CANNOT_PEND(ReceiveFlags) &&
@@ -1168,10 +1158,9 @@ static BOOLEAN _IsAllowNetBuffer(_In_ MFD_PFSRV_ENTRY ServiceEntry)
 	return TRUE;
 }
 
-static LONG _PrepareServiceQueue(_In_ PMS_FILTER Filter, _In_ MFD_PQUEUE Queue, _Inout_ MFD_PFSRV_QUEUE SrvQueue) {
+static LONG _PrepareServiceQueue(_In_ PMS_FILTER Filter, _In_ PFILTER_QUEUE_ENTRY FilterQueueEntry, _Inout_ MFD_PFSRV_QUEUE SrvQueue) {
 	ULONG NumberOfNetBuffer = 0;
-	//MFD_PFSRV_ENTRY pSrvEntry = NULL;
-	PNET_BUFFER pNetBuffer = NET_BUFFER_LIST_FIRST_NB((PNET_BUFFER_LIST)Queue->NetBufferQueue.Head);
+	PNET_BUFFER pNetBuffer = NET_BUFFER_LIST_FIRST_NB((PNET_BUFFER_LIST)FilterQueueEntry->NetBufferLists.Head);
 	ULONG i = 0;
 
 	while (pNetBuffer) {
@@ -1193,9 +1182,8 @@ static LONG _PrepareServiceQueue(_In_ PMS_FILTER Filter, _In_ MFD_PQUEUE Queue, 
 	}
 
 	NdisZeroMemory(SrvQueue->Head, sizeof(MFD_FSRV_ENTRY) * NumberOfNetBuffer);
-	SrvQueue->NetBufferList = (PNET_BUFFER_LIST)Queue->NetBufferQueue.Head;
+	SrvQueue->NetBufferList = (PNET_BUFFER_LIST)FilterQueueEntry->NetBufferLists.Head;
 
-	//pSrvEntry = SrvQueue->Head;
 	for (i = 1; i < NumberOfNetBuffer; i++) {
 		SrvQueue->Head[i - 1].Next = &SrvQueue->Head[i];
 	}
@@ -1210,7 +1198,9 @@ VOID FilterThreadRoutine(_In_ PVOID ThreadContext)
 	BOOLEAN             DispatchLevel = FALSE;
 	NTSTATUS            Status;
 	LARGE_INTEGER       SleepTime;
-	MFD_PQUEUE          pQueue = NULL;
+
+	PFILTER_QUEUE_ENTRY pFilterQueueEntry = NULL;
+
 	MFD_FSRV_QUEUE      FilterServiceQueue;
 	MFD_PFSRV_ENTRY     pSrvEntry;
 	BOOLEAN             bResult;
@@ -1231,33 +1221,29 @@ VOID FilterThreadRoutine(_In_ PVOID ThreadContext)
 		}
 
 		// Take the first queued NetBufferLists from the filter queue
+		pFilterQueueEntry = NULL;
 		FILTER_ACQUIRE_LOCK(&pFilter->Lock, DispatchLevel);
-		pQueue = pFilter->NetBufferQueue;
-		if (pQueue) {
-			if (pQueue->Next)
-				pQueue->Next->Tail = pQueue->Tail;
-
-			pFilter->NetBufferQueue = pQueue->Next;
-			pQueue->Next = NULL;
+		if (!IsQueueEmpty(&pFilter->NetBufferListsQueue)) {
+			pFilterQueueEntry = (PFILTER_QUEUE_ENTRY)RemoveHeadQueue(&pFilter->NetBufferListsQueue);
 		}
 		FILTER_RELEASE_LOCK(&pFilter->Lock, DispatchLevel);
 
 		// Noting to process, wait for next iteration
-		if (pQueue == NULL) {
-			SleepTime.QuadPart = TIMER_RELATIVE(MILLISECONDS(100)); // TODO: Condition variable
+		if (pFilterQueueEntry == NULL) {
+			SleepTime.QuadPart = TIMER_RELATIVE(MILLISECONDS(100)); // TODO: Use signal event instead of sleep
 			KeDelayExecutionThread(KernelMode, FALSE, &SleepTime);
 			continue;
 		}
 
 		// Prepare the service queue for processing in the filter service
 		// @FIXME: Currently we process only the first NBL in the queue, but need to process all of them
-		NumberOfServiceEntries = _PrepareServiceQueue(pFilter, pQueue, &FilterServiceQueue);
+		NumberOfServiceEntries = _PrepareServiceQueue(pFilter, pFilterQueueEntry, &FilterServiceQueue);
 		ASSERT(NumberOfServiceEntries > 0);
 
 		bResult = TRUE;
 		pSrvEntry = FilterServiceQueue.Head;
 		// Check Network Buffers
-		// @FIXME: If any, drop whole NET_BUFFER_LIST
+		// @FIXME: If any, drops whole NET_BUFFER_LIST
 		while (pSrvEntry) {
 			if (!_IsAllowNetBuffer(pSrvEntry)) {
 				bResult = FALSE;
@@ -1270,17 +1256,17 @@ VOID FilterThreadRoutine(_In_ PVOID ThreadContext)
 			NumberOfServiceEntries, bResult);
 
 		if (bResult) {
-			DEBUGP(DL_TRACE, ">>> Indicate COPIED NBLs, number = %d\n", pQueue->NumberOfNetBufferLists);
+			DEBUGP(DL_TRACE, ">>> Indicate COPIED NBLs, number = %d\n", pFilterQueueEntry->NumberOfNetBufferLists);
 			NdisFIndicateReceiveNetBufferLists(pFilter->FilterHandle,
-				(PNET_BUFFER_LIST)(pQueue->NetBufferQueue.Head),
-				pQueue->PortNumber,
-				pQueue->NumberOfNetBufferLists,
-				pQueue->ReceiveFlags);
+				(PNET_BUFFER_LIST)(pFilterQueueEntry->NetBufferLists.Head),
+				pFilterQueueEntry->PortNumber,
+				pFilterQueueEntry->NumberOfNetBufferLists,
+				pFilterQueueEntry->ReceiveFlags);
 		}
 
 		FILTER_FREE_MEM(FilterServiceQueue.Head);
-		FILTER_FREE_MEM(pQueue); // Free the filter queue processed entry
-		pQueue = NULL;
+		FILTER_FREE_MEM(pFilterQueueEntry); // Free the filter queue processed entry
+		pFilterQueueEntry = NULL;
 	}
 
 	DEBUGP(DL_TRACE, "<=== FilterThreadRoutine\n");

@@ -75,14 +75,14 @@ typedef struct _QUEUE_HEADER
 	PQUEUE_ENTRY     Tail;
 } QUEUE_HEADER, * PQUEUE_HEADER;
 
-typedef struct _MFD_QUEUE_ENTRY {
-	QUEUE_HEADER     NetBufferQueue;
-	NDIS_PORT_NUMBER PortNumber;
-	ULONG            NumberOfNetBufferLists;
-	ULONG            ReceiveFlags;
+typedef struct _MFD_FILTER_QUEUE_ENTRY {
 	struct _MFD_QUEUE_ENTRY* Next;
-	struct _MFD_QUEUE_ENTRY* Tail;
-}MFD_QUEUE, * MFD_PQUEUE;
+
+	QUEUE_HEADER     NetBufferLists;
+	ULONG            NumberOfNetBufferLists;
+	NDIS_PORT_NUMBER PortNumber;
+	ULONG            ReceiveFlags;
+} FILTER_QUEUE_ENTRY, * PFILTER_QUEUE_ENTRY;
 
 typedef struct _MFD_FILTER_SERVICE_ENTRY
 {
@@ -317,7 +317,7 @@ typedef struct _MS_FILTER
 	NDIS_HANDLE NetBufferPool;
 	NDIS_HANDLE NetBufferListPool;
 
-	MFD_PQUEUE NetBufferQueue;
+	QUEUE_HEADER NetBufferListsQueue; // NetBufferLists that are queued for processing
 
 }MS_FILTER, * PMS_FILTER;
 
