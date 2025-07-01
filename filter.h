@@ -2,11 +2,11 @@
 
 Module Name:
 
-    Filter.h
+	Filter.h
 
 Abstract:
 
-    This module contains all prototypes and macros for filter code.
+	This module contains all prototypes and macros for filter code.
 
 --*/
 #ifndef _FILT_H
@@ -66,23 +66,39 @@ extern LIST_ENTRY          FilterModuleList;
 //
 typedef struct _QUEUE_ENTRY
 {
-    struct _QUEUE_ENTRY * Next;
-}QUEUE_ENTRY, *PQUEUE_ENTRY;
+	struct _QUEUE_ENTRY* Next;
+}QUEUE_ENTRY, * PQUEUE_ENTRY;
 
 typedef struct _QUEUE_HEADER
 {
-    PQUEUE_ENTRY     Head;
-    PQUEUE_ENTRY     Tail;
-} QUEUE_HEADER, *PQUEUE_HEADER;
+	PQUEUE_ENTRY     Head;
+	PQUEUE_ENTRY     Tail;
+} QUEUE_HEADER, * PQUEUE_HEADER;
 
 typedef struct _MFD_QUEUE_ENTRY {
-    QUEUE_HEADER     NetBufferQueue;
-    NDIS_PORT_NUMBER PortNumber;
-    ULONG            NumberOfNetBufferLists;
-    ULONG            ReceiveFlags;
-    struct _MFD_QUEUE_ENTRY* Next;
-    struct _MFD_QUEUE_ENTRY* Tail;
-}MFD_QUEUE, *MFD_PQUEUE;
+	QUEUE_HEADER     NetBufferQueue;
+	NDIS_PORT_NUMBER PortNumber;
+	ULONG            NumberOfNetBufferLists;
+	ULONG            ReceiveFlags;
+	struct _MFD_QUEUE_ENTRY* Next;
+	struct _MFD_QUEUE_ENTRY* Tail;
+}MFD_QUEUE, * MFD_PQUEUE;
+
+typedef struct _MFD_FILTER_SERVICE_ENTRY
+{
+	ULONG      Length;
+	USHORT     Port;
+	ULONGLONG  NetBufferId;
+	STRING     IpAddr;
+
+	struct _MFD_FILTER_SERVICE_ENTRY* Next;
+} MFD_FSRV_ENTRY, * MFD_PFSRV_ENTRY;
+
+typedef struct _MFD_FILTER_SERVICE_QUEUE {
+	PNET_BUFFER_LIST NetBufferList;
+	MFD_PFSRV_ENTRY Head;
+	MFD_PFSRV_ENTRY Next; // Next Buffer To Process
+} MFD_FSRV_QUEUE, * MFD_PFSRV_QUEUE;
 
 #if TRACK_RECEIVES
 UINT         filterLogReceiveRefIndex = 0;
@@ -259,58 +275,58 @@ ULONG_PTR    filterLogSendRef[0x10000];
 //
 typedef enum _FILTER_STATE
 {
-    FilterStateUnspecified,
-    FilterInitialized,
-    FilterPausing,
-    FilterPaused,
-    FilterRunning,
-    FilterRestarting,
-    FilterDetaching
+	FilterStateUnspecified,
+	FilterInitialized,
+	FilterPausing,
+	FilterPaused,
+	FilterRunning,
+	FilterRestarting,
+	FilterDetaching
 } FILTER_STATE;
 
 
 typedef struct _FILTER_REQUEST
 {
-    NDIS_OID_REQUEST       Request;
-    NDIS_EVENT             ReqEvent;
-    NDIS_STATUS            Status;
-} FILTER_REQUEST, *PFILTER_REQUEST;
+	NDIS_OID_REQUEST       Request;
+	NDIS_EVENT             ReqEvent;
+	NDIS_STATUS            Status;
+} FILTER_REQUEST, * PFILTER_REQUEST;
 
 typedef struct _MS_FILTER
 {
-    LIST_ENTRY                      FilterModuleLink;
-    ULONG                           RefCount;     // Reference to this filter
+	LIST_ENTRY                      FilterModuleLink;
+	ULONG                           RefCount;     // Reference to this filter
 
-    NDIS_HANDLE                     FilterHandle;
-    NDIS_STRING                     FilterModuleName;
-    NDIS_STRING                     MiniportFriendlyName;
-    NDIS_STRING                     MiniportName;
-    NET_IFINDEX                     MiniportIfIndex;
+	NDIS_HANDLE                     FilterHandle;
+	NDIS_STRING                     FilterModuleName;
+	NDIS_STRING                     MiniportFriendlyName;
+	NDIS_STRING                     MiniportName;
+	NET_IFINDEX                     MiniportIfIndex;
 
-    NDIS_STATUS                     Status;
+	NDIS_STATUS                     Status;
 
-    FILTER_LOCK                     Lock;    // Lock for protection of state and outstanding sends and recvs
-    FILTER_STATE                    State;   // Which state the filter is in
+	FILTER_LOCK                     Lock;    // Lock for protection of state and outstanding sends and recvs
+	FILTER_STATE                    State;   // Which state the filter is in
 
-    ULONG                           OutstandingRcvs;
+	ULONG                           OutstandingRcvs;
 
-    NDIS_STRING                     FilterName;
-    BOOLEAN                         TrackReceives;
+	NDIS_STRING                     FilterName;
+	BOOLEAN                         TrackReceives;
 
-    // NBL Pool
-    NDIS_HANDLE NetBufferPool;
+	// NBL Pool
+	NDIS_HANDLE NetBufferPool;
 	NDIS_HANDLE NetBufferListPool;
 
-    MFD_PQUEUE NetBufferQueue;
+	MFD_PQUEUE NetBufferQueue;
 
 }MS_FILTER, * PMS_FILTER;
 
 
 typedef struct _FILTER_DEVICE_EXTENSION
 {
-    ULONG            Signature;
-    NDIS_HANDLE      Handle;
-} FILTER_DEVICE_EXTENSION, *PFILTER_DEVICE_EXTENSION;
+	ULONG            Signature;
+	NDIS_HANDLE      Handle;
+} FILTER_DEVICE_EXTENSION, * PFILTER_DEVICE_EXTENSION;
 
 
 #define FILTER_READY_TO_PAUSE(_Filter)      \
@@ -321,15 +337,15 @@ typedef struct _FILTER_DEVICE_EXTENSION
 //
 typedef struct _FL_NDIS_FILTER_LIST
 {
-    LIST_ENTRY              Link;
-    NDIS_HANDLE             ContextHandle;
-    NDIS_STRING             FilterInstanceName;
-} FL_NDIS_FILTER_LIST, *PFL_NDIS_FILTER_LIST;
+	LIST_ENTRY              Link;
+	NDIS_HANDLE             ContextHandle;
+	NDIS_STRING             FilterInstanceName;
+} FL_NDIS_FILTER_LIST, * PFL_NDIS_FILTER_LIST;
 
 //
 // The context inside a cloned request
 //
-typedef struct _NDIS_OID_REQUEST *FILTER_REQUEST_CONTEXT,**PFILTER_REQUEST_CONTEXT;
+typedef struct _NDIS_OID_REQUEST* FILTER_REQUEST_CONTEXT, ** PFILTER_REQUEST_CONTEXT;
 
 
 //
@@ -356,14 +372,14 @@ VOID FilterThreadRoutine(_In_ PVOID ThreadContext);
 _IRQL_requires_max_(PASSIVE_LEVEL)
 NDIS_STATUS
 ndismfdRegisterDevice(
-    VOID
-    );
+	VOID
+);
 
 _IRQL_requires_max_(PASSIVE_LEVEL)
 VOID
 ndismfdDeregisterDevice(
-    VOID
-    );
+	VOID
+);
 
 DRIVER_DISPATCH ndismfdDispatch;
 
@@ -372,24 +388,24 @@ DRIVER_DISPATCH ndismfdDeviceIoControl;
 _IRQL_requires_max_(DISPATCH_LEVEL)
 PMS_FILTER
 filterFindFilterModule(
-    _In_reads_bytes_(BufferLength)
-         PUCHAR                   Buffer,
-    _In_ ULONG                    BufferLength
-    );
+	_In_reads_bytes_(BufferLength)
+	PUCHAR                   Buffer,
+	_In_ ULONG                    BufferLength
+);
 
 _IRQL_requires_max_(DISPATCH_LEVEL)
 NDIS_STATUS
 filterDoInternalRequest(
-    _In_ PMS_FILTER                   FilterModuleContext,
-    _In_ NDIS_REQUEST_TYPE            RequestType,
-    _In_ NDIS_OID                     Oid,
-    _Inout_updates_bytes_to_(InformationBufferLength, *pBytesProcessed)
-         PVOID                        InformationBuffer,
-    _In_ ULONG                        InformationBufferLength,
-    _In_opt_ ULONG                    OutputBufferLength,
-    _In_ ULONG                        MethodId,
-    _Out_ PULONG                      pBytesProcessed
-    );
+	_In_ PMS_FILTER                   FilterModuleContext,
+	_In_ NDIS_REQUEST_TYPE            RequestType,
+	_In_ NDIS_OID                     Oid,
+	_Inout_updates_bytes_to_(InformationBufferLength, *pBytesProcessed)
+	PVOID                        InformationBuffer,
+	_In_ ULONG                        InformationBufferLength,
+	_In_opt_ ULONG                    OutputBufferLength,
+	_In_ ULONG                        MethodId,
+	_Out_ PULONG                      pBytesProcessed
+);
 EXTERN_C_END
 
 #endif  //_FILT_H
