@@ -76,18 +76,20 @@ typedef struct _MFD_FILTER_QUEUE_ENTRY {
 
 typedef struct _MFD_FILTER_SERVICE_ENTRY
 {
-	ULONG      Length;
-	USHORT     Port;
-	ULONGLONG  NetBufferId;
-	STRING     IpAddr;
-
 	struct _MFD_FILTER_SERVICE_ENTRY* Next;
+
+	ULONG      Length;
+	ULONGLONG  NetBufferId;
+	USHORT     DstPort;
+	ULONG      IpAddr;
 } MFD_FSRV_ENTRY, * MFD_PFSRV_ENTRY;
 
 typedef struct _MFD_FILTER_SERVICE_QUEUE {
 	PNET_BUFFER_LIST NetBufferList;
-	MFD_PFSRV_ENTRY Head;
-	MFD_PFSRV_ENTRY Next; // Next Buffer To Process
+	MFD_PFSRV_ENTRY  ServiceEntryList;
 } MFD_FSRV_QUEUE, * MFD_PFSRV_QUEUE;
+
+#define kMinIpV4HeaderLength ((UCHAR)20)
+#define kMaxIpV4HeaderLength ((UCHAR)60)
 
 #endif // _FILT_QUEUE_H

@@ -950,7 +950,7 @@ N.B.: It is important to check the ReceiveFlags in NDIS_TEST_RECEIVE_CANNOT_PEND
 		NdisFReturnNetBufferLists(pFilter->FilterHandle, NetBufferLists, 0);
 
 		// Push the cloned NBLs to the filtering queue
-		DEBUGP(DL_TRACE, "+++ Queue COPIED NBLs, number = %d\n", NumberOfNetBufferLists);
+		DEBUGP(DL_TRACE, "+++ Queue COPIED NBLs, number = %d address = %p\n", pFilterQueue->NumberOfNetBufferLists, QUEUE_UNLINK_NET_BUFFER_LIST(pFilterQueue->NetBufferLists.Head));
 		FILTER_ACQUIRE_LOCK(&pFilter->Lock, DispatchLevel);
 		pQueueEntry = QUEUE_LINK_TO_ENTRY(pFilterQueue);
 		InsertTailQueue(&pFilter->NetBufferListsQueue, pQueueEntry);
@@ -1115,17 +1115,123 @@ Return Value:
 	return Status;
 }
 
-static BOOLEAN _IsAllowNetBuffer(_In_ MFD_PFSRV_ENTRY ServiceEntry)
+static
+BOOLEAN
+_ExtractIPv4SrcIpAndDstPort(
+	_In_ PNET_BUFFER NetBuffer,
+	_Out_ ULONG* SrcIp,
+	_Out_ USHORT* DstPort
+)
+{
+	typedef struct _ETHERNET_HEADER {
+		UCHAR  DstAddr[6];
+		UCHAR  SrcAddr[6];
+		USHORT Type;
+	} ETHERNET_HEADER, * PETHERNET_HEADER;
+
+	typedef struct _IPV4_HEADER {
+		UCHAR  VersionAndHeaderLength;
+		UCHAR  TypeOfService;
+		USHORT TotalLength;
+		USHORT Identification;
+		USHORT FlagsAndFragmentOffset;
+		UCHAR  TimeToLive;
+		UCHAR  Protocol;
+		USHORT HeaderChecksum;
+		ULONG  SrcAddr;
+		ULONG  DstAddr;
+		// Options may follow
+	} IPV4_HEADER, * PIPV4_HEADER;
+
+	const UCHAR kTcpUdpPortLength = 4; // TCP/UDP port length in bytes
+	const ULONG kMinDataLength = (sizeof(ETHERNET_HEADER) + kMinIpV4HeaderLength + kTcpUdpPortLength);
+
+	ULONG dataLength, dataOffset;
+	PMDL mdl;
+	PUCHAR pData;
+	PETHERNET_HEADER pEth;
+	USHORT ethType;
+	PIPV4_HEADER ipHeader;
+	ULONG ipHeaderLength;
+	USHORT dstPort;
+
+	mdl = NET_BUFFER_FIRST_MDL(NetBuffer);
+	pData = (PUCHAR)MmGetSystemAddressForMdlSafe(mdl, NormalPagePriority);
+	if (pData == NULL) {
+		DEBUGP(DL_WARN, "Failed to get system address for MDL.\n");
+		return FALSE;
+	}
+
+	dataOffset = NET_BUFFER_DATA_OFFSET(NetBuffer);
+	dataLength = MmGetMdlByteCount(mdl) - dataOffset;
+
+	if (dataLength < kMinDataLength) {
+		DEBUGP(DL_WARN, "NET_BUFFER data is too small to contain an Ethernet and IP headers.\n");
+		return FALSE;
+	}
+
+	pData += dataOffset;
+	pEth = (PETHERNET_HEADER)pData;
+	ethType = RtlUshortByteSwap(pEth->Type);
+
+	// Only handle IPv4
+	if (ethType != 0x0800) {
+		DEBUGP(DL_WARN, "Unsupported Ethernet type: 0x%04x.\n", ethType);
+		return FALSE;
+	}
+
+	ipHeader = (PIPV4_HEADER)(pData + sizeof(ETHERNET_HEADER));
+	ipHeaderLength = (ipHeader->VersionAndHeaderLength & 0x0F) * 4; // Header length in bytes
+
+	if (ipHeaderLength < kMinIpV4HeaderLength) {
+		DEBUGP(DL_WARN, "Invalid IPv4 header length: %u bytes.\n", ipHeaderLength);
+		return FALSE;
+	}
+
+	if (dataLength < (sizeof(ETHERNET_HEADER) + ipHeaderLength + kTcpUdpPortLength)) {
+		DEBUGP(DL_WARN, "NET_BUFFER data is too small ipHeaderLength = %u, dataLength = %u.\n", ipHeaderLength, dataLength);
+		return FALSE;
+	}
+
+	if (ipHeader->Protocol != IPPROTO_TCP && ipHeader->Protocol != IPPROTO_UDP)
+		return FALSE;
+
+	dstPort = *(USHORT*)(pData + sizeof(ETHERNET_HEADER) + ipHeaderLength + 2);
+
+	*SrcIp = ipHeader->SrcAddr;
+	*DstPort = RtlUshortByteSwap(dstPort);
+
+	return TRUE;
+}
+
+static BOOLEAN _IsAllowServiceEntries(_In_ MFD_PFSRV_ENTRY ServiceEntry)
 {
 	UNREFERENCED_PARAMETER(ServiceEntry);
 	return TRUE;
 }
 
-static LONG _PrepareServiceQueue(_In_ PMS_FILTER Filter, _In_ PFILTER_QUEUE_ENTRY FilterQueueEntry, _Inout_ MFD_PFSRV_QUEUE SrvQueue) {
+
+static
+LONG
+_PushNetBufferListToServiceQueue(
+	_In_ PMS_FILTER Filter,
+	_In_ PFILTER_QUEUE_ENTRY FilterQueueEntry,
+	_Inout_ MFD_PFSRV_QUEUE SrvQueue)
+{
 	ULONG NumberOfNetBuffer = 0;
-	PNET_BUFFER pNetBuffer = NET_BUFFER_LIST_FIRST_NB((PNET_BUFFER_LIST)FilterQueueEntry->NetBufferLists.Head);
+	PNET_BUFFER_LIST pNetBufferList = NULL;
+	PNET_BUFFER pNetBuffer = NULL;
+	PQUEUE_ENTRY pQueueEntry = NULL;
+	MFD_PFSRV_ENTRY pServiceEntry = NULL;
 	ULONG i = 0;
 
+	if (IsQueueEmpty(&FilterQueueEntry->NetBufferLists))
+		return 0;
+
+	pQueueEntry = RemoveHeadQueue(&FilterQueueEntry->NetBufferLists);
+	pNetBufferList = QUEUE_UNLINK_NET_BUFFER_LIST(pQueueEntry);
+	NET_BUFFER_LIST_NEXT_NBL(pNetBufferList) = NULL;
+	pNetBuffer = NET_BUFFER_LIST_FIRST_NB(pNetBufferList);
 	while (pNetBuffer) {
 		NumberOfNetBuffer++;
 		pNetBuffer = NET_BUFFER_NEXT_NB(pNetBuffer);
@@ -1135,22 +1241,33 @@ static LONG _PrepareServiceQueue(_In_ PMS_FILTER Filter, _In_ PFILTER_QUEUE_ENTR
 		return 0;
 	}
 
-	SrvQueue->Head = (MFD_PFSRV_ENTRY)FILTER_ALLOC_MEM(Filter->FilterHandle,
+	SrvQueue->ServiceEntryList = (MFD_PFSRV_ENTRY)FILTER_ALLOC_MEM(Filter->FilterHandle,
 		sizeof(MFD_FSRV_ENTRY) * NumberOfNetBuffer);
-	SrvQueue->Next = SrvQueue->Head;
 
-	if (SrvQueue->Head == NULL) {
+	if (SrvQueue->ServiceEntryList == NULL) {
 		DEBUGP(DL_WARN, "Alloc Filter Service Entry failed, number = %d\n", NumberOfNetBuffer);
 		return -1;
 	}
 
-	NdisZeroMemory(SrvQueue->Head, sizeof(MFD_FSRV_ENTRY) * NumberOfNetBuffer);
-	SrvQueue->NetBufferList = (PNET_BUFFER_LIST)FilterQueueEntry->NetBufferLists.Head;
+	NdisZeroMemory(SrvQueue->ServiceEntryList, sizeof(MFD_FSRV_ENTRY) * NumberOfNetBuffer);
+	SrvQueue->NetBufferList = pNetBufferList;
 
+	pNetBuffer = NET_BUFFER_LIST_FIRST_NB(pNetBufferList);
 	for (i = 1; i < NumberOfNetBuffer; i++) {
-		SrvQueue->Head[i - 1].Next = &SrvQueue->Head[i];
+		pServiceEntry = &SrvQueue->ServiceEntryList[i - 1];
+		pServiceEntry->Next = &SrvQueue->ServiceEntryList[i];
+
+		if (_ExtractIPv4SrcIpAndDstPort(pNetBuffer, &pServiceEntry->IpAddr, &pServiceEntry->DstPort)) {
+			DEBUGP(DL_TRACE, "Extracted IPv4 Src IP 0x%x and DstPort %d from NetBuffer %p\n",
+				pServiceEntry->IpAddr, pServiceEntry->DstPort, pNetBuffer);
+
+			// FIXME Should pass package as it not supported
+		}
+
+		pNetBuffer = NET_BUFFER_NEXT_NB(pNetBuffer);
 	}
-	SrvQueue->Head[NumberOfNetBuffer - 1].Next = NULL;
+	SrvQueue->ServiceEntryList[NumberOfNetBuffer - 1].Next = NULL;
+	// FIXME: Extract IPv4 Src IP and Dst Port for the last NetBuffer
 
 	return NumberOfNetBuffer;
 }
@@ -1163,11 +1280,8 @@ VOID FilterThreadRoutine(_In_ PVOID ThreadContext)
 	LARGE_INTEGER       SleepTime;
 
 	PFILTER_QUEUE_ENTRY pFilterQueueEntry = NULL;
-	PQUEUE_ENTRY        pQueueEntry = NULL;
-	PNET_BUFFER_LIST    pNetBufferList = NULL;
 
 	MFD_FSRV_QUEUE      FilterServiceQueue;
-	MFD_PFSRV_ENTRY     pSrvEntry;
 	BOOLEAN             bResult;
 	ULONG               NumberOfServiceEntries = 0;
 
@@ -1189,8 +1303,7 @@ VOID FilterThreadRoutine(_In_ PVOID ThreadContext)
 		pFilterQueueEntry = NULL;
 		FILTER_ACQUIRE_LOCK(&pFilter->Lock, DispatchLevel);
 		if (!IsQueueEmpty(&pFilter->NetBufferListsQueue)) {
-			pQueueEntry = RemoveHeadQueue(&pFilter->NetBufferListsQueue);
-			pFilterQueueEntry = QUEUE_UNLINK_FROM_ENTRY(pQueueEntry, FILTER_QUEUE_ENTRY);
+			pFilterQueueEntry = QUEUE_UNLINK_FROM_ENTRY(pFilter->NetBufferListsQueue.Head, FILTER_QUEUE_ENTRY);
 		}
 		FILTER_RELEASE_LOCK(&pFilter->Lock, DispatchLevel);
 
@@ -1203,36 +1316,36 @@ VOID FilterThreadRoutine(_In_ PVOID ThreadContext)
 
 		// Prepare the service queue for processing in the filter service
 		// @FIXME: Currently we process only the first NBL in the queue, but need to process all of them
-		NumberOfServiceEntries = _PrepareServiceQueue(pFilter, pFilterQueueEntry, &FilterServiceQueue);
+		NumberOfServiceEntries = _PushNetBufferListToServiceQueue(pFilter, pFilterQueueEntry, &FilterServiceQueue);
 		ASSERT(NumberOfServiceEntries > 0);
 
-		bResult = TRUE;
-		pSrvEntry = FilterServiceQueue.Head;
-		// Check Network Buffers
+		// Check All Network Buffers for the NET_BUFFER_LIST
 		// @FIXME: If any, drops whole NET_BUFFER_LIST
-		while (pSrvEntry) {
-			if (!_IsAllowNetBuffer(pSrvEntry)) {
-				bResult = FALSE;
-				break;
-			}
-			pSrvEntry = pSrvEntry->Next;
-		}
+		bResult = _IsAllowServiceEntries(FilterServiceQueue.ServiceEntryList);
 
 		DEBUGP(DL_TRACE, "??? Processed Service Queue: NetBuffers = %d, bResult = %d\n",
 			NumberOfServiceEntries, bResult);
 
 		if (bResult) {
-			DEBUGP(DL_TRACE, ">>> Indicate COPIED NBLs, number = %d\n", pFilterQueueEntry->NumberOfNetBufferLists);
-			pNetBufferList = QUEUE_UNLINK_NET_BUFFER_LIST(pFilterQueueEntry->NetBufferLists.Head);
+			DEBUGP(DL_TRACE, ">>> Indicate COPIED NBL %p\n", FilterServiceQueue.NetBufferList);
 			NdisFIndicateReceiveNetBufferLists(pFilter->FilterHandle,
-				pNetBufferList,
+				FilterServiceQueue.NetBufferList,
 				pFilterQueueEntry->PortNumber,
 				pFilterQueueEntry->NumberOfNetBufferLists,
 				pFilterQueueEntry->ReceiveFlags);
 		}
 
-		FILTER_FREE_MEM(FilterServiceQueue.Head);
-		FILTER_FREE_MEM(pFilterQueueEntry); // Free the filter queue processed entry
+		FILTER_FREE_MEM(FilterServiceQueue.ServiceEntryList);
+
+		// No more NetBufferList in the queue entry
+		if (IsQueueEmpty(&pFilterQueueEntry->NetBufferLists)) {
+			FILTER_ACQUIRE_LOCK(&pFilter->Lock, DispatchLevel);
+			RemoveHeadQueue(&pFilter->NetBufferListsQueue);
+			FILTER_RELEASE_LOCK(&pFilter->Lock, DispatchLevel);
+
+			FILTER_FREE_MEM(pFilterQueueEntry);
+		}
+
 		pFilterQueueEntry = NULL;
 	}
 
