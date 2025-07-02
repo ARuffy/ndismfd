@@ -2,5 +2,6 @@
 #include <ndis.h>
 #include <filteruser.h>
 #include "flt_dbg.h"
+#include "filterqueue.h"
 #include "filter.h"
 

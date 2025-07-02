@@ -181,6 +181,7 @@
     <ClCompile Include="device.c" />
     <ClCompile Include="flt_dbg.c" />
     <ResourceCompile Include="filter.rc" />
+    <ClInclude Include="filterqueue.h" />
     <ClInclude Include="precomp.h" />
     <ClInclude Include="filter.h" />
     <ClInclude Include="filteruser.h" />

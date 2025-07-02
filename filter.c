@@ -443,8 +443,6 @@ N.B.:  FILTER can use NdisRegisterDeviceEx to create a device, so the upper
 			pFilter->MiniportName.Length);
 
 		pFilter->MiniportIfIndex = AttachParameters->BaseMiniportIfIndex;
-
-		pFilter->TrackReceives = TRUE;
 		pFilter->FilterHandle = NdisFilterHandle;
 
 		NdisZeroMemory(&FilterAttributes, sizeof(NDIS_FILTER_ATTRIBUTES));
@@ -780,13 +778,13 @@ Arguments:
 
 --*/
 {
-	PMS_FILTER          pFilter = (PMS_FILTER)FilterModuleContext;
+	// PMS_FILTER          pFilter = (PMS_FILTER)FilterModuleContext;
 	PNET_BUFFER_LIST    CurrNbl = NetBufferLists;
 	PNET_BUFFER_LIST    NextNbl = NULL;
 	UINT                NumOfNetBufferLists = 0;
-	BOOLEAN             DispatchLevel;
-	ULONG               Ref;
 
+	UNREFERENCED_PARAMETER(FilterModuleContext);
+	UNREFERENCED_PARAMETER(ReturnFlags);
 	DEBUGP(DL_TRACE, "===> ReturnNetBufferLists, NetBufferLists is %p.\n", NetBufferLists);
 
 	// If your filter injected any receive packets into the datapath to be
@@ -800,33 +798,16 @@ Arguments:
 	// you received them.  (Exceptions: the NBLs can be re-ordered on the linked
 	// list, and the scratch fields are don't-care).
 
-	if (pFilter->TrackReceives)
+	while (CurrNbl)
 	{
-		while (CurrNbl)
-		{
-			NumOfNetBufferLists++;
-			NextNbl = NET_BUFFER_LIST_NEXT_NBL(CurrNbl);
-			NET_BUFFER_LIST_NEXT_NBL(CurrNbl) = NULL;
-			NdisFreeCloneNetBufferList(CurrNbl, 0);
-			CurrNbl = NextNbl;
-		}
+		NumOfNetBufferLists++;
+		NextNbl = NET_BUFFER_LIST_NEXT_NBL(CurrNbl);
+		NET_BUFFER_LIST_NEXT_NBL(CurrNbl) = NULL;
+		NdisFreeCloneNetBufferList(CurrNbl, 0);
+		CurrNbl = NextNbl;
 	}
 
-	// Return the received NBLs.  If you removed any NBLs from the chain, make
-	// sure the chain isn't empty (i.e., NetBufferLists!=NULL).
 	DEBUGP(DL_TRACE, "<<< Return NBLs number = %d\n", NumOfNetBufferLists);
-
-	if (pFilter->TrackReceives)
-	{
-		DispatchLevel = NDIS_TEST_RETURN_AT_DISPATCH_LEVEL(ReturnFlags);
-		FILTER_ACQUIRE_LOCK(&pFilter->Lock, DispatchLevel);
-
-		pFilter->OutstandingRcvs -= NumOfNetBufferLists;
-		Ref = pFilter->OutstandingRcvs;
-		FILTER_LOG_RCV_REF(3, pFilter, NetBufferLists, Ref);
-
-		FILTER_RELEASE_LOCK(&pFilter->Lock, DispatchLevel);
-	}
 
 	DEBUGP(DL_TRACE, "<=== ReturnNetBufferLists.\n");
 }
@@ -866,11 +847,11 @@ N.B.: It is important to check the ReceiveFlags in NDIS_TEST_RECEIVE_CANNOT_PEND
 
 	PMS_FILTER          pFilter = (PMS_FILTER)FilterModuleContext;
 	BOOLEAN             DispatchLevel;
-	ULONG               Ref;
 	BOOLEAN             bFalse = FALSE;
 	PNET_BUFFER_LIST    CurrNbl = NULL;
 	PNET_BUFFER_LIST    DupNbl = NULL;
 	PFILTER_QUEUE_ENTRY pFilterQueue;
+	PQUEUE_ENTRY	    pQueueEntry;
 #if DBG
 	ULONG               ReturnFlags;
 #endif
@@ -941,16 +922,6 @@ N.B.: It is important to check the ReceiveFlags in NDIS_TEST_RECEIVE_CANNOT_PEND
 		// deep copy, and return the original NBL.
 		//
 
-		if (pFilter->TrackReceives)
-		{
-			FILTER_ACQUIRE_LOCK(&pFilter->Lock, DispatchLevel);
-			pFilter->OutstandingRcvs += NumberOfNetBufferLists;
-			Ref = pFilter->OutstandingRcvs;
-
-			FILTER_LOG_RCV_REF(1, pFilter, NetBufferLists, Ref);
-			FILTER_RELEASE_LOCK(&pFilter->Lock, DispatchLevel);
-		}
-
 		pFilterQueue = (FILTER_QUEUE_ENTRY*)FILTER_ALLOC_MEM(pFilter->FilterHandle, sizeof(FILTER_QUEUE_ENTRY));
 		NdisZeroMemory(pFilterQueue, sizeof(FILTER_QUEUE_ENTRY));
 		ASSERT(pFilterQueue); // FIXME: Add error handling
@@ -967,7 +938,8 @@ N.B.: It is important to check the ReceiveFlags in NDIS_TEST_RECEIVE_CANNOT_PEND
 			DupNbl = NdisAllocateCloneNetBufferList(CurrNbl, pFilter->NetBufferListPool, 0, 0);
 			ASSERT(DupNbl);
 			if (DupNbl) {
-				InsertTailQueue(&pFilterQueue->NetBufferLists, DupNbl);
+				pQueueEntry = QUEUE_LINK_NET_BUFFER_LIST(DupNbl);
+				InsertTailQueue(&pFilterQueue->NetBufferLists, pQueueEntry);
 				pFilterQueue->NumberOfNetBufferLists++;
 
 				CurrNbl = NET_BUFFER_LIST_NEXT_NBL(CurrNbl);
@@ -980,18 +952,9 @@ N.B.: It is important to check the ReceiveFlags in NDIS_TEST_RECEIVE_CANNOT_PEND
 		// Push the cloned NBLs to the filtering queue
 		DEBUGP(DL_TRACE, "+++ Queue COPIED NBLs, number = %d\n", NumberOfNetBufferLists);
 		FILTER_ACQUIRE_LOCK(&pFilter->Lock, DispatchLevel);
-		InsertTailQueue(&pFilter->NetBufferListsQueue, pFilterQueue);
+		pQueueEntry = QUEUE_LINK_TO_ENTRY(pFilterQueue);
+		InsertTailQueue(&pFilter->NetBufferListsQueue, pQueueEntry);
 		FILTER_RELEASE_LOCK(&pFilter->Lock, DispatchLevel);
-
-		if (NDIS_TEST_RECEIVE_CANNOT_PEND(ReceiveFlags) &&
-			pFilter->TrackReceives)
-		{
-			FILTER_ACQUIRE_LOCK(&pFilter->Lock, DispatchLevel);
-			pFilter->OutstandingRcvs -= NumberOfNetBufferLists;
-			Ref = pFilter->OutstandingRcvs;
-			FILTER_LOG_RCV_REF(2, pFilter, NetBufferLists, Ref);
-			FILTER_RELEASE_LOCK(&pFilter->Lock, DispatchLevel);
-		}
 
 	} while (bFalse);
 
@@ -1200,6 +1163,8 @@ VOID FilterThreadRoutine(_In_ PVOID ThreadContext)
 	LARGE_INTEGER       SleepTime;
 
 	PFILTER_QUEUE_ENTRY pFilterQueueEntry = NULL;
+	PQUEUE_ENTRY        pQueueEntry = NULL;
+	PNET_BUFFER_LIST    pNetBufferList = NULL;
 
 	MFD_FSRV_QUEUE      FilterServiceQueue;
 	MFD_PFSRV_ENTRY     pSrvEntry;
@@ -1224,7 +1189,8 @@ VOID FilterThreadRoutine(_In_ PVOID ThreadContext)
 		pFilterQueueEntry = NULL;
 		FILTER_ACQUIRE_LOCK(&pFilter->Lock, DispatchLevel);
 		if (!IsQueueEmpty(&pFilter->NetBufferListsQueue)) {
-			pFilterQueueEntry = (PFILTER_QUEUE_ENTRY)RemoveHeadQueue(&pFilter->NetBufferListsQueue);
+			pQueueEntry = RemoveHeadQueue(&pFilter->NetBufferListsQueue);
+			pFilterQueueEntry = QUEUE_UNLINK_FROM_ENTRY(pQueueEntry, FILTER_QUEUE_ENTRY);
 		}
 		FILTER_RELEASE_LOCK(&pFilter->Lock, DispatchLevel);
 
@@ -1257,8 +1223,9 @@ VOID FilterThreadRoutine(_In_ PVOID ThreadContext)
 
 		if (bResult) {
 			DEBUGP(DL_TRACE, ">>> Indicate COPIED NBLs, number = %d\n", pFilterQueueEntry->NumberOfNetBufferLists);
+			pNetBufferList = QUEUE_UNLINK_NET_BUFFER_LIST(pFilterQueueEntry->NetBufferLists.Head);
 			NdisFIndicateReceiveNetBufferLists(pFilter->FilterHandle,
-				(PNET_BUFFER_LIST)(pFilterQueueEntry->NetBufferLists.Head),
+				pNetBufferList,
 				pFilterQueueEntry->PortNumber,
 				pFilterQueueEntry->NumberOfNetBufferLists,
 				pFilterQueueEntry->ReceiveFlags);

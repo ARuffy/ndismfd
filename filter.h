@@ -61,91 +61,8 @@ extern LIST_ENTRY          FilterModuleList;
 #define LINKNAME_STRING             L"\\DosDevices\\ndismfd"
 #define NTDEVICE_STRING             L"\\Device\\ndismfd"
 
-//
-// Types and macros to manipulate packet queue
-//
-typedef struct _QUEUE_ENTRY
-{
-	struct _QUEUE_ENTRY* Next;
-}QUEUE_ENTRY, * PQUEUE_ENTRY;
-
-typedef struct _QUEUE_HEADER
-{
-	PQUEUE_ENTRY     Head;
-	PQUEUE_ENTRY     Tail;
-} QUEUE_HEADER, * PQUEUE_HEADER;
-
-typedef struct _MFD_FILTER_QUEUE_ENTRY {
-	struct _MFD_QUEUE_ENTRY* Next;
-
-	QUEUE_HEADER     NetBufferLists;
-	ULONG            NumberOfNetBufferLists;
-	NDIS_PORT_NUMBER PortNumber;
-	ULONG            ReceiveFlags;
-} FILTER_QUEUE_ENTRY, * PFILTER_QUEUE_ENTRY;
-
-typedef struct _MFD_FILTER_SERVICE_ENTRY
-{
-	ULONG      Length;
-	USHORT     Port;
-	ULONGLONG  NetBufferId;
-	STRING     IpAddr;
-
-	struct _MFD_FILTER_SERVICE_ENTRY* Next;
-} MFD_FSRV_ENTRY, * MFD_PFSRV_ENTRY;
-
-typedef struct _MFD_FILTER_SERVICE_QUEUE {
-	PNET_BUFFER_LIST NetBufferList;
-	MFD_PFSRV_ENTRY Head;
-	MFD_PFSRV_ENTRY Next; // Next Buffer To Process
-} MFD_FSRV_QUEUE, * MFD_PFSRV_QUEUE;
-
-#if TRACK_RECEIVES
-UINT         filterLogReceiveRefIndex = 0;
-ULONG_PTR    filterLogReceiveRef[0x10000];
-#endif
-
-#if TRACK_SENDS
-UINT         filterLogSendRefIndex = 0;
-ULONG_PTR    filterLogSendRef[0x10000];
-#endif
-
-#if TRACK_RECEIVES
-#define   FILTER_LOG_RCV_REF(_O, _Instance, _NetBufferList, _Ref)    \
-    {\
-        filterLogReceiveRef[filterLogReceiveRefIndex++] = (ULONG_PTR)(_O); \
-        filterLogReceiveRef[filterLogReceiveRefIndex++] = (ULONG_PTR)(_Instance); \
-        filterLogReceiveRef[filterLogReceiveRefIndex++] = (ULONG_PTR)(_NetBufferList); \
-        filterLogReceiveRef[filterLogReceiveRefIndex++] = (ULONG_PTR)(_Ref); \
-        if (filterLogReceiveRefIndex >= (0x10000 - 5))                    \
-        {                                                              \
-            filterLogReceiveRefIndex = 0;                                 \
-        }                                                              \
-    }
-#else
-#define   FILTER_LOG_RCV_REF(_O, _Instance, _NetBufferList, _Ref)
-#endif
-
-#if TRACK_SENDS
-#define   FILTER_LOG_SEND_REF(_O, _Instance, _NetBufferList, _Ref)    \
-    {\
-        filterLogSendRef[filterLogSendRefIndex++] = (ULONG_PTR)(_O); \
-        filterLogSendRef[filterLogSendRefIndex++] = (ULONG_PTR)(_Instance); \
-        filterLogSendRef[filterLogSendRefIndex++] = (ULONG_PTR)(_NetBufferList); \
-        filterLogSendRef[filterLogSendRefIndex++] = (ULONG_PTR)(_Ref); \
-        if (filterLogSendRefIndex >= (0x10000 - 5))                    \
-        {                                                              \
-            filterLogSendRefIndex = 0;                                 \
-        }                                                              \
-    }
-
-#else
-#define   FILTER_LOG_SEND_REF(_O, _Instance, _NetBufferList, _Ref)
-#endif
-
 #define FILTER_MEMORY_ALIGNMENT(_Bytes) \
     (((_Bytes) + (MEMORY_ALLOCATION_ALIGNMENT - 1)) & ~(MEMORY_ALLOCATION_ALIGNMENT - 1))
-
 
 //
 // DEBUG related macros.
@@ -212,50 +129,6 @@ ULONG_PTR    filterLogSendRef[0x10000];
     }
 #endif //DBG_SPIN_LOCK
 
-
-#define NET_BUFFER_LIST_LINK_TO_ENTRY(_pNBL)    ((PQUEUE_ENTRY)(NET_BUFFER_LIST_NEXT_NBL(_pNBL)))
-#define ENTRY_TO_NET_BUFFER_LIST(_pEnt)         (CONTAINING_RECORD((_pEnt), NET_BUFFER_LIST, Next))
-
-#define InitializeQueueHeader(_QueueHeader)             \
-{                                                       \
-    (_QueueHeader)->Head = (_QueueHeader)->Tail = NULL; \
-}
-
-//
-// Macros for queue operations
-//
-#define IsQueueEmpty(_QueueHeader)      ((_QueueHeader)->Head == NULL)
-
-#define RemoveHeadQueue(_QueueHeader)                   \
-    (_QueueHeader)->Head;                               \
-    {                                                   \
-        PQUEUE_ENTRY pNext;                             \
-        ASSERT((_QueueHeader)->Head);                   \
-        pNext = (_QueueHeader)->Head->Next;             \
-        (_QueueHeader)->Head = pNext;                   \
-        if (pNext == NULL)                              \
-            (_QueueHeader)->Tail = NULL;                \
-    }
-
-#define InsertHeadQueue(_QueueHeader, _QueueEntry)                  \
-    {                                                               \
-        ((PQUEUE_ENTRY)(_QueueEntry))->Next = (_QueueHeader)->Head; \
-        (_QueueHeader)->Head = (PQUEUE_ENTRY)(_QueueEntry);         \
-        if ((_QueueHeader)->Tail == NULL)                           \
-            (_QueueHeader)->Tail = (PQUEUE_ENTRY)(_QueueEntry);     \
-    }
-
-#define InsertTailQueue(_QueueHeader, _QueueEntry)                      \
-    {                                                                   \
-        ((PQUEUE_ENTRY)(_QueueEntry))->Next = NULL;                     \
-        if ((_QueueHeader)->Tail)                                       \
-            (_QueueHeader)->Tail->Next = (PQUEUE_ENTRY)(_QueueEntry);   \
-        else                                                            \
-            (_QueueHeader)->Head = (PQUEUE_ENTRY)(_QueueEntry);         \
-        (_QueueHeader)->Tail = (PQUEUE_ENTRY)(_QueueEntry);             \
-    }
-
-
 #define TIMER_RELATIVE(wait) (-(wait))
 #define NANOSECONDS(nanos) \
 (((signed __int64)(nanos)) / 100L)
@@ -308,10 +181,7 @@ typedef struct _MS_FILTER
 	FILTER_LOCK                     Lock;    // Lock for protection of state and outstanding sends and recvs
 	FILTER_STATE                    State;   // Which state the filter is in
 
-	ULONG                           OutstandingRcvs;
-
 	NDIS_STRING                     FilterName;
-	BOOLEAN                         TrackReceives;
 
 	// NBL Pool
 	NDIS_HANDLE NetBufferPool;
