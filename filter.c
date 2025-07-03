@@ -1210,58 +1210,47 @@ static BOOLEAN _IsAllowServiceEntries(_In_ MFD_PFSRV_ENTRY ServiceEntry)
 	return TRUE;
 }
 
-
 static
 LONG
 _PushNetBufferListToServiceQueue(
 	_In_ PMS_FILTER Filter,
-	_In_ PFILTER_QUEUE_ENTRY FilterQueueEntry,
+	_In_ PNET_BUFFER_LIST NetBufferList,
 	_Inout_ MFD_PFSRV_QUEUE SrvQueue)
 {
 	ULONG NumberOfNetBuffer = 0;
-	PNET_BUFFER_LIST pNetBufferList = NULL;
 	PNET_BUFFER pNetBuffer = NULL;
-	PQUEUE_ENTRY pQueueEntry = NULL;
 	MFD_PFSRV_ENTRY pServiceEntry = NULL;
 	ULONG i = 0;
 
-	if (IsQueueEmpty(&FilterQueueEntry->NetBufferLists))
-		return 0;
-
-	pQueueEntry = RemoveHeadQueue(&FilterQueueEntry->NetBufferLists);
-	pNetBufferList = QUEUE_UNLINK_NET_BUFFER_LIST(pQueueEntry);
-	NET_BUFFER_LIST_NEXT_NBL(pNetBufferList) = NULL;
-	pNetBuffer = NET_BUFFER_LIST_FIRST_NB(pNetBufferList);
+	pNetBuffer = NET_BUFFER_LIST_FIRST_NB(NetBufferList);
 	while (pNetBuffer) {
 		NumberOfNetBuffer++;
 		pNetBuffer = NET_BUFFER_NEXT_NB(pNetBuffer);
 	}
 
-	if (NumberOfNetBuffer <= 0) {
+	if (NumberOfNetBuffer <= 0)
 		return 0;
-	}
 
-	SrvQueue->ServiceEntryList = (MFD_PFSRV_ENTRY)FILTER_ALLOC_MEM(Filter->FilterHandle,
-		sizeof(MFD_FSRV_ENTRY) * NumberOfNetBuffer);
-
+	// TODO: Don't allocate new memory if previously allocated memory is enough
+	SrvQueue->ServiceEntryList = (MFD_PFSRV_ENTRY)FILTER_ALLOC_MEM(Filter->FilterHandle, sizeof(MFD_FSRV_ENTRY) * NumberOfNetBuffer);
 	if (SrvQueue->ServiceEntryList == NULL) {
 		DEBUGP(DL_WARN, "Alloc Filter Service Entry failed, number = %d\n", NumberOfNetBuffer);
 		return -1;
 	}
 
 	NdisZeroMemory(SrvQueue->ServiceEntryList, sizeof(MFD_FSRV_ENTRY) * NumberOfNetBuffer);
-	SrvQueue->NetBufferList = pNetBufferList;
+	SrvQueue->NetBufferList = NetBufferList;
 
-	pNetBuffer = NET_BUFFER_LIST_FIRST_NB(pNetBufferList);
+	pNetBuffer = NET_BUFFER_LIST_FIRST_NB(NetBufferList);
 	for (i = 1; i < (NumberOfNetBuffer + 1); i++) {
 		pServiceEntry = &SrvQueue->ServiceEntryList[i - 1];
 		pServiceEntry->Next = i < NumberOfNetBuffer ? &SrvQueue->ServiceEntryList[i] : NULL;
 
-		if (_ExtractIPv4SrcIpAndDstPort(pNetBuffer, &pServiceEntry->IpAddr, &pServiceEntry->DstPort)) {
-			DEBUGP(DL_TRACE, "Extracted IPv4 Src IP 0x%x and DstPort %d from NetBuffer %p\n",
-				pServiceEntry->IpAddr, pServiceEntry->DstPort, pNetBuffer);
-
-			// FIXME Should pass package as it not supported
+		if (!_ExtractIPv4SrcIpAndDstPort(pNetBuffer, &pServiceEntry->IpAddr, &pServiceEntry->DstPort)) {
+			DEBUGP(DL_TRACE, "Extractation IPv4 data isn't posible, NET_BUFFER_LIST = %p.\n", NetBufferList);
+			FILTER_FREE_MEM(SrvQueue->ServiceEntryList);
+			SrvQueue->ServiceEntryList = NULL;
+			return 0;
 		}
 
 		pNetBuffer = NET_BUFFER_NEXT_NB(pNetBuffer);
@@ -1278,9 +1267,11 @@ VOID FilterThreadRoutine(_In_ PVOID ThreadContext)
 	LARGE_INTEGER       SleepTime;
 
 	PFILTER_QUEUE_ENTRY pFilterQueueEntry = NULL;
+	PQUEUE_ENTRY        pQueueEntry = NULL;
+	PNET_BUFFER_LIST    pNetBufferList = NULL;
 
 	MFD_FSRV_QUEUE      FilterServiceQueue;
-	BOOLEAN             bResult;
+	BOOLEAN             bAllowNetBufferList;
 	ULONG               NumberOfServiceEntries = 0;
 
 	DEBUGP(DL_TRACE, "===> FilterThreadRoutine: pFilter %p\n", pFilter);
@@ -1297,7 +1288,7 @@ VOID FilterThreadRoutine(_In_ PVOID ThreadContext)
 			break;
 		}
 
-		// Take the first queued NetBufferLists from the filter queue
+		// Take the queued NetBufferLists from the filter queue
 		pFilterQueueEntry = NULL;
 		FILTER_ACQUIRE_LOCK(&pFilter->Lock, DispatchLevel);
 		if (!IsQueueEmpty(&pFilter->NetBufferListsQueue)) {
@@ -1312,30 +1303,43 @@ VOID FilterThreadRoutine(_In_ PVOID ThreadContext)
 			continue;
 		}
 
-		// Prepare the service queue for processing in the filter service
-		// @FIXME: Currently we process only the first NBL in the queue, but need to process all of them
-		NumberOfServiceEntries = _PushNetBufferListToServiceQueue(pFilter, pFilterQueueEntry, &FilterServiceQueue);
-		ASSERT(NumberOfServiceEntries > 0);
+		ASSERT(IsQueueEmpty(&pFilterQueueEntry->NetBufferLists) == FALSE);
 
-		// Check All Network Buffers for the NET_BUFFER_LIST
-		// @FIXME: If any, drops whole NET_BUFFER_LIST
-		bResult = _IsAllowServiceEntries(FilterServiceQueue.ServiceEntryList);
+		// Pop the first NetBufferList from the queue entry
+		pQueueEntry = RemoveHeadQueue(&pFilterQueueEntry->NetBufferLists);
+		pNetBufferList = QUEUE_UNLINK_NET_BUFFER_LIST(pQueueEntry);
+		NET_BUFFER_LIST_NEXT_NBL(pNetBufferList) = NULL;
 
-		DEBUGP(DL_TRACE, "??? Processed Service Queue: NetBuffers = %d, bResult = %d\n",
-			NumberOfServiceEntries, bResult);
+		// Push the NetBufferList to the service queue
+		NumberOfServiceEntries = _PushNetBufferListToServiceQueue(pFilter, pNetBufferList, &FilterServiceQueue);
+		if (NumberOfServiceEntries == 0) {
+			bAllowNetBufferList = TRUE;
+		}
+		else if (NumberOfServiceEntries > 0) {
+			bAllowNetBufferList = _IsAllowServiceEntries(FilterServiceQueue.ServiceEntryList);
+			DEBUGP(DL_TRACE, "??? Processed Service Queue: NetBuffers = %d\n", NumberOfServiceEntries);
+			FILTER_FREE_MEM(FilterServiceQueue.ServiceEntryList);
+			FilterServiceQueue.ServiceEntryList = NULL;
+		}
+		else {
+			bAllowNetBufferList = FALSE;
+		}
 
-		if (bResult) {
-			DEBUGP(DL_TRACE, ">>> Indicate COPIED NBL %p\n", FilterServiceQueue.NetBufferList);
+		if (bAllowNetBufferList) {
+			DEBUGP(DL_TRACE, ">>> Indicate COPIED NBL %p\n", pNetBufferList);
 			NdisFIndicateReceiveNetBufferLists(pFilter->FilterHandle,
-				FilterServiceQueue.NetBufferList,
+				pNetBufferList,
 				pFilterQueueEntry->PortNumber,
 				pFilterQueueEntry->NumberOfNetBufferLists,
 				pFilterQueueEntry->ReceiveFlags);
 		}
+		else {
+			DEBUGP(DL_TRACE, "!!! Drop COPIED NBL %p\n", pNetBufferList);
+			NdisFreeCloneNetBufferList(pNetBufferList, 0);
+			pNetBufferList = NULL;
+		}
 
-		FILTER_FREE_MEM(FilterServiceQueue.ServiceEntryList);
-
-		// No more NetBufferList in the queue entry
+		// Free empty queue entry if there are no more NetBufferLists
 		if (IsQueueEmpty(&pFilterQueueEntry->NetBufferLists)) {
 			FILTER_ACQUIRE_LOCK(&pFilter->Lock, DispatchLevel);
 			RemoveHeadQueue(&pFilter->NetBufferListsQueue);
@@ -1343,7 +1347,6 @@ VOID FilterThreadRoutine(_In_ PVOID ThreadContext)
 
 			FILTER_FREE_MEM(pFilterQueueEntry);
 		}
-
 		pFilterQueueEntry = NULL;
 	}
 
