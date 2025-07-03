@@ -1253,9 +1253,9 @@ _PushNetBufferListToServiceQueue(
 	SrvQueue->NetBufferList = pNetBufferList;
 
 	pNetBuffer = NET_BUFFER_LIST_FIRST_NB(pNetBufferList);
-	for (i = 1; i < NumberOfNetBuffer; i++) {
+	for (i = 1; i < (NumberOfNetBuffer + 1); i++) {
 		pServiceEntry = &SrvQueue->ServiceEntryList[i - 1];
-		pServiceEntry->Next = &SrvQueue->ServiceEntryList[i];
+		pServiceEntry->Next = i < NumberOfNetBuffer ? &SrvQueue->ServiceEntryList[i] : NULL;
 
 		if (_ExtractIPv4SrcIpAndDstPort(pNetBuffer, &pServiceEntry->IpAddr, &pServiceEntry->DstPort)) {
 			DEBUGP(DL_TRACE, "Extracted IPv4 Src IP 0x%x and DstPort %d from NetBuffer %p\n",
@@ -1266,8 +1266,6 @@ _PushNetBufferListToServiceQueue(
 
 		pNetBuffer = NET_BUFFER_NEXT_NB(pNetBuffer);
 	}
-	SrvQueue->ServiceEntryList[NumberOfNetBuffer - 1].Next = NULL;
-	// FIXME: Extract IPv4 Src IP and Dst Port for the last NetBuffer
 
 	return NumberOfNetBuffer;
 }
