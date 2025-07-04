@@ -194,7 +194,8 @@ typedef struct _MS_FILTER
 	NDIS_HANDLE                     NetBufferListPool;
 
 	QUEUE_HEADER                    NetBufferListsQueue; // NetBufferLists that are queued for processing
-}MS_FILTER, * PMS_FILTER;
+	FILTER_RING_BUFFER              ServiceEntryRingBuffer; // Ring buffer for Service Entries
+} MS_FILTER, * PMS_FILTER;
 
 
 typedef struct _FILTER_DEVICE_EXTENSION

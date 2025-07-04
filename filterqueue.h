@@ -72,7 +72,6 @@ typedef struct _MFD_FILTER_QUEUE_ENTRY {
 	ULONG            ReceiveFlags;
 } FILTER_QUEUE_ENTRY, * PFILTER_QUEUE_ENTRY;
 
-// TODO ==============================================
 typedef struct _MFD_FILTER_SERVICE_ITEM {
     struct _MFD_FILTER_SERVICE_ITEM* Next;
 
@@ -80,13 +79,36 @@ typedef struct _MFD_FILTER_SERVICE_ITEM {
     ULONG      IpAddr;
 }FILTER_SERVICE_ITEM, *PFILTER_SERVICE_ITEM;
 
-
 typedef struct _MFD_FILTER_SERVICE_ENTRY
 {
+	struct _MFD_FILTER_SERVICE_ENTRY* Next;
+
     ULONGLONG NetBufferListId;
 	ULONG NumberOfServiceItems;
     PFILTER_SERVICE_ITEM ServiceItems;
 } FILTER_SERVICE_ENTRY, * PFILTER_SERVICE_ENTRY;
+
+#define FILTER_RING_BUFFER_SIZE (64)
+
+typedef struct _MFD_FILTER_RING_BUFFER {
+    PFILTER_SERVICE_ENTRY Head;
+    PFILTER_SERVICE_ENTRY Current;
+
+    FILTER_SERVICE_ENTRY Buffer[FILTER_RING_BUFFER_SIZE];
+} FILTER_RING_BUFFER, *PFILTER_RING_BUFFER;
+
+VOID InitializeRingBuffer(
+    _Inout_ PFILTER_RING_BUFFER RingBuffer
+);
+
+VOID FreeRingBuffer(
+    _Inout_ PFILTER_RING_BUFFER RingBuffer
+);
+
+VOID PushToRingBuffer(
+    _Inout_ PFILTER_RING_BUFFER RingBuffer,
+    _In_ PFILTER_SERVICE_ENTRY ServiceEntry
+);
 
 #define kMinIpV4HeaderLength ((UCHAR)20)
 #define kMaxIpV4HeaderLength ((UCHAR)60)

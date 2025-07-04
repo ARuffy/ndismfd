@@ -53,6 +53,9 @@
     <ClCompile Include="precomp.c">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="filterqueue.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="filter.rc">

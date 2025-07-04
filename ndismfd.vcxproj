@@ -171,6 +171,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <!--Leaf Item elements-->
+    <ClCompile Include="filterqueue.c" />
     <ClCompile Include="precomp.c">
       <AdditionalIncludeDirectories>..;.;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreProcessorDefinitions>%(PreProcessorDefinitions);NDIS_WDM=1</PreProcessorDefinitions>

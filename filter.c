@@ -481,6 +481,8 @@ N.B.:  FILTER can use NdisRegisterDeviceEx to create a device, so the upper
 		InitializeQueueHeader(&pFilter->NetBufferListsQueue);
 		pFilter->State = FilterPaused;
 
+		InitializeRingBuffer(&pFilter->ServiceEntryRingBuffer);
+
 		FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
 		InsertHeadList(&FilterModuleList, &pFilter->FilterModuleLink);
 		FILTER_RELEASE_LOCK(&FilterListLock, bFalse);
@@ -698,6 +700,7 @@ NOTE: Called at PASSIVE_LEVEL and the filter is in paused state
 
 	_StopFilterThread();
 	_FreeFilterNetPools(pFilter);
+	FreeRingBuffer(&pFilter->ServiceEntryRingBuffer);
 
 	FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
 	RemoveEntryList(&pFilter->FilterModuleLink);
@@ -1080,7 +1083,7 @@ static BOOLEAN _IsAllowedIpAddrAndPort(ULONG IpAddr, USHORT DstPort)
 	return TRUE;
 }
 
-static BOOLEAN _IsAllowServiceEntries(_In_ PFILTER_SERVICE_ENTRY ServiceEntry)
+static BOOLEAN _IsAllowServiceEntry(_In_ PFILTER_SERVICE_ENTRY ServiceEntry)
 {
 	BOOLEAN bResult = TRUE;
 	PFILTER_SERVICE_ITEM pServiceItem = NULL;
@@ -1102,22 +1105,22 @@ static BOOLEAN _IsAllowServiceEntries(_In_ PFILTER_SERVICE_ENTRY ServiceEntry)
 	return bResult;
 }
 
-#define _FreeServiceEntry(_ServiceEntry) \
-	if (_ServiceEntry) { \
-		FILTER_FREE_MEM(_ServiceEntry); \
-		_ServiceEntry = NULL; \
+#define _FreeServiceItems(_ServiceEntry) \
+	if ((_ServiceEntry) && (_ServiceEntry)->ServiceItems) { \
+		FILTER_FREE_MEM((_ServiceEntry)->ServiceItems); \
+		(_ServiceEntry)->ServiceItems = NULL; \
 	} \
 
 static
-PFILTER_SERVICE_ENTRY
-_CreateServiceEntryFromNetBufferList(
+BOOLEAN
+_CreateServiceItems(
 	_In_ PMS_FILTER Filter,
-	_In_ PNET_BUFFER_LIST NetBufferList)
+	_In_ PNET_BUFFER_LIST NetBufferList,
+	_Inout_ PFILTER_SERVICE_ENTRY ServiceEntry)
 {
 	ULONG NumberOfNetBuffer = 0;
 	PNET_BUFFER pNetBuffer = NULL;
 	PFILTER_SERVICE_ITEM pServiceItem = NULL;
-	PFILTER_SERVICE_ENTRY pServiceEntry = NULL;
 	ULONG i = 0;
 
 	pNetBuffer = NET_BUFFER_LIST_FIRST_NB(NetBufferList);
@@ -1127,34 +1130,33 @@ _CreateServiceEntryFromNetBufferList(
 	}
 
 	if (NumberOfNetBuffer <= 0)
-		return NULL;
+		return FALSE;
 
-	pServiceEntry = (PFILTER_SERVICE_ENTRY)FILTER_ALLOC_MEM(Filter->FilterHandle, sizeof(FILTER_SERVICE_ENTRY) + sizeof(FILTER_SERVICE_ITEM) * NumberOfNetBuffer);
-	if (pServiceEntry == NULL) {
-		DEBUGP(DL_WARN, "Alloc FILTER_SERVICE_ENTRY failed, number = %d\n", NumberOfNetBuffer);
-		return NULL;
+	ServiceEntry->ServiceItems = (PFILTER_SERVICE_ITEM)FILTER_ALLOC_MEM(Filter->FilterHandle, sizeof(FILTER_SERVICE_ITEM) * NumberOfNetBuffer);
+	if (ServiceEntry->ServiceItems == NULL) {
+		DEBUGP(DL_WARN, "Alloc FILTER_SERVICE_ITEMs failed, number = %d\n", NumberOfNetBuffer);
+		return FALSE;
 	}
 
-	NdisZeroMemory(pServiceEntry, sizeof(FILTER_SERVICE_ENTRY) + sizeof(FILTER_SERVICE_ITEM) * NumberOfNetBuffer);
-	pServiceEntry->NetBufferListId = (ULONG_PTR)NetBufferList;
-	pServiceEntry->NumberOfServiceItems = NumberOfNetBuffer;
-	pServiceEntry->ServiceItems = (PFILTER_SERVICE_ITEM)(((PUCHAR)(pServiceEntry)) + sizeof(FILTER_SERVICE_ENTRY));
+	NdisZeroMemory(ServiceEntry->ServiceItems, sizeof(FILTER_SERVICE_ITEM) * NumberOfNetBuffer);
+	ServiceEntry->NetBufferListId = (ULONGLONG)NetBufferList;
+	ServiceEntry->NumberOfServiceItems = NumberOfNetBuffer;
 
 	pNetBuffer = NET_BUFFER_LIST_FIRST_NB(NetBufferList);
 	for (i = 1; i < (NumberOfNetBuffer + 1); i++) {
-		pServiceItem = &pServiceEntry->ServiceItems[i - 1];
-		pServiceItem->Next = i < NumberOfNetBuffer ? &pServiceEntry->ServiceItems[i] : NULL;
+		pServiceItem = &ServiceEntry->ServiceItems[i - 1];
+		pServiceItem->Next = i < NumberOfNetBuffer ? &ServiceEntry->ServiceItems[i] : NULL;
 
 		if (!_ExtractIPv4SrcIpAndDstPort(pNetBuffer, &pServiceItem->IpAddr, &pServiceItem->DstPort)) {
 			DEBUGP(DL_TRACE, "Extractation IPv4 data isn't posible, NET_BUFFER_LIST = %p.\n", NetBufferList);
-			_FreeServiceEntry(pServiceEntry);
-			return NULL;
+			_FreeServiceItems(ServiceEntry);
+			return FALSE;
 		}
 
 		pNetBuffer = NET_BUFFER_NEXT_NB(pNetBuffer);
 	}
 
-	return pServiceEntry;
+	return TRUE;
 }
 
 VOID FilterThreadRoutine(_In_ PVOID ThreadContext)
@@ -1168,12 +1170,13 @@ VOID FilterThreadRoutine(_In_ PVOID ThreadContext)
 	PQUEUE_ENTRY        pQueueEntry = NULL;
 	PNET_BUFFER_LIST    pNetBufferList = NULL;
 
-	PFILTER_SERVICE_ENTRY pFilterServiceEntry;
+	FILTER_SERVICE_ENTRY  FilterServiceEntry;
 	BOOLEAN               bAllowNetBufferList;
 
 	DEBUGP(DL_TRACE, "===> FilterThreadRoutine: pFilter %p\n", pFilter);
 
 	NdisZeroMemory(&SleepTime, sizeof(LARGE_INTEGER));
+	NdisZeroMemory(&FilterServiceEntry, sizeof(FILTER_SERVICE_ENTRY));
 	while (TRUE)
 	{
 		SleepTime.QuadPart = 0;
@@ -1207,16 +1210,24 @@ VOID FilterThreadRoutine(_In_ PVOID ThreadContext)
 		NET_BUFFER_LIST_NEXT_NBL(pNetBufferList) = NULL;
 
 		// Push the NetBufferList to the service queue
-		pFilterServiceEntry = _CreateServiceEntryFromNetBufferList(pFilter, pNetBufferList);
-		if (pFilterServiceEntry) {
-			bAllowNetBufferList = _IsAllowServiceEntries(pFilterServiceEntry);
+		if (_CreateServiceItems(pFilter, pNetBufferList, &FilterServiceEntry)) {
+			bAllowNetBufferList = _IsAllowServiceEntry(&FilterServiceEntry);
 			DEBUGP(DL_TRACE, "??? Processed Service Queue: NBL = %p, Items = %d Pass = %d\n",
-				pNetBufferList, pFilterServiceEntry->NumberOfServiceItems, bAllowNetBufferList);
-			_FreeServiceEntry(pFilterServiceEntry);
+				pNetBufferList, FilterServiceEntry.NumberOfServiceItems, bAllowNetBufferList);
+
+			if (bAllowNetBufferList) {
+				FILTER_ACQUIRE_LOCK(&pFilter->Lock, DispatchLevel);
+				PushToRingBuffer(&pFilter->ServiceEntryRingBuffer, &FilterServiceEntry);
+				FILTER_RELEASE_LOCK(&pFilter->Lock, DispatchLevel);
+			}
+			else {
+				_FreeServiceItems(&FilterServiceEntry);
+			}
 		}
 		else {
 			bAllowNetBufferList = TRUE;
 		}
+
 		if (bAllowNetBufferList) {
 			DEBUGP(DL_TRACE, ">>> Indicate COPIED NBL %p\n", pNetBufferList);
 			NdisFIndicateReceiveNetBufferLists(pFilter->FilterHandle,
