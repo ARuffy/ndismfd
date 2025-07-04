@@ -14,17 +14,6 @@ Abstract:
 
 #define __FILENUMBER    'PNPF'
 
-// TODO: Draft implementation of filtering rules
-#define FILTER_MAX_LOCK_IP_ADDRESS_NUM (32)
-#define FILTER_MAX_LOCK_PORT_NUM (8)
-
-typedef struct _FILTER_BLOCK_TABLE
-{
-	ULONG IpAddress[FILTER_MAX_LOCK_IP_ADDRESS_NUM];
-	ULONG IpAddressNumber;
-	USHORT Port[FILTER_MAX_LOCK_IP_ADDRESS_NUM * FILTER_MAX_LOCK_PORT_NUM];
-} FILTER_BLOCK_TABLE, * PFILTER_BLOCK_TABLE;
-
 // This directive puts the DriverEntry function into the INIT segment of the
 // driver.  To conserve memory, the code will be discarded when the driver's
 // DriverEntry function returns.  You can declare other functions used only

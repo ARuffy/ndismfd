@@ -130,6 +130,45 @@ ndismfdDispatch(
 	return Status;
 }
 
+static
+BOOLEAN
+_PushBlockTableEntry(
+	_Inout_  PFILTER_BLOCK_TABLE Table,
+	_In_     PFILTER_BLOCK_TABLE_ENTRY Entry)
+{
+	ULONG i, portIndex;
+	if (Table->IpAddressNumber >= FILTER_MAX_LOCK_IP_ADDRESS_NUM) {
+		return FALSE;
+	}
+
+	if (Entry->BlockType) {
+		// NOT_IMPLEMENTED
+		return FALSE;
+	}
+
+	// TODO: Find if alderady exists
+	Table->IpAddress[Table->IpAddressNumber] = RtlUlongByteSwap(Entry->IpAddr);
+	portIndex = FILTER_MAX_LOCK_PORT_NUM * Table->IpAddressNumber;
+	Table->IpAddressNumber++;
+
+	if (Entry->Port == 0)
+	{
+		Table->Port[portIndex] = 0;
+		return TRUE;
+	}
+
+	for (i = 0; i < FILTER_MAX_LOCK_PORT_NUM; i++, portIndex++)
+	{
+		if (Table->Port[portIndex] == 0)
+		{
+			Table->Port[portIndex] = Entry->Port;
+			return TRUE;
+		}
+	}
+
+	return FALSE;
+}
+
 _Use_decl_annotations_
 NTSTATUS
 ndismfdDeviceIoControl(
@@ -221,6 +260,40 @@ ndismfdDeviceIoControl(
 		{
 			Status = STATUS_BUFFER_TOO_SMALL;
 		}
+		break;
+
+	case IOCTL_FILTER_MODIFY_BLOCK_TABLE:
+		InputBuffer = (PUCHAR)Irp->AssociatedIrp.SystemBuffer;
+		InputBufferLength = IrpSp->Parameters.DeviceIoControl.InputBufferLength;
+		if (InputBufferLength < sizeof(ULONG))
+		{
+			Status = STATUS_INVALID_PARAMETER;
+			break;
+		}
+
+		// Read number of entries
+		ULONG entryCount = *(ULONG*)InputBuffer;
+		PUCHAR entryPtr = InputBuffer + sizeof(ULONG);
+		ULONG expectedLength = sizeof(ULONG) + entryCount * sizeof(FILTER_BLOCK_TABLE_ENTRY);
+
+		if (InputBufferLength < expectedLength)
+		{
+			Status = STATUS_BUFFER_TOO_SMALL;
+			break;
+		}
+
+		FILTER_ACQUIRE_LOCK(&FilterTableLock, bFalse);
+		for (ULONG i = 0; i < entryCount; ++i)
+		{
+			PFILTER_BLOCK_TABLE_ENTRY entry = (PFILTER_BLOCK_TABLE_ENTRY)entryPtr;
+			if (_PushBlockTableEntry(&FilterBlockTable, entry)) {
+				DEBUGP(DL_TRACE, "> Added block table entry: Ip=0x%x Port=%d\n", RtlUlongByteSwap(entry->IpAddr), entry->Port);
+			}
+			entryPtr += sizeof(FILTER_BLOCK_TABLE_ENTRY);
+		}
+		FILTER_RELEASE_LOCK(&FilterTableLock, bFalse);
+
+		Status = STATUS_SUCCESS;
 		break;
 
 

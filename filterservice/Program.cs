@@ -1,8 +1,9 @@
-﻿using System;
+﻿using Microsoft.Win32.SafeHandles;
+using System;
 using System.IO;
+using System.Net;
 using System.Runtime.InteropServices;
 using System.Text;
-using Microsoft.Win32.SafeHandles;
 
 class Program
 {
@@ -16,6 +17,16 @@ class Program
 
     static readonly uint IOCTL_FILTER_ENUMERATE_ALL_INSTANCES =
         CTL_CODE(FILE_DEVICE_PHYSICAL_NETCARD, 2, METHOD_BUFFERED, FILE_ANY_ACCESS);
+    static readonly uint IOCTL_FILTER_MODIFY_BLOCK_TABLE =
+         CTL_CODE(FILE_DEVICE_PHYSICAL_NETCARD, 8, METHOD_BUFFERED, FILE_ANY_ACCESS);
+
+    [StructLayout(LayoutKind.Sequential, Pack = 4)]
+    struct FILTER_BLOCK_TABLE_ENTRY
+    {
+        public uint IpAddr;
+        public ushort Port;
+        public ushort BlockType;
+    }
 
     [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Auto)]
     static extern SafeFileHandle CreateFile(
@@ -37,6 +48,47 @@ class Program
         uint nOutBufferSize,
         out uint lpBytesReturned,
         IntPtr lpOverlapped);
+
+    public static void SendBlockTableIoctl(SafeFileHandle device)
+    {
+        var ip = BitConverter.ToUInt32(IPAddress.Parse("192.168.56.1").GetAddressBytes(), 0);
+        FILTER_BLOCK_TABLE_ENTRY entry1 = new FILTER_BLOCK_TABLE_ENTRY
+        {
+            IpAddr = ip,
+            Port = 5566,
+            BlockType = 0
+        };
+        FILTER_BLOCK_TABLE_ENTRY entry2 = new FILTER_BLOCK_TABLE_ENTRY
+        {
+            IpAddr = ip,
+            Port = 5577,
+            BlockType = 0
+        };
+
+        uint entryCount = 2;
+        int structSize = Marshal.SizeOf<FILTER_BLOCK_TABLE_ENTRY>();
+        byte[] buffer = new byte[sizeof(uint) + structSize * entryCount];
+        var bufferHandle = GCHandle.Alloc(buffer, GCHandleType.Pinned);
+        var pBuffer = bufferHandle.AddrOfPinnedObject();
+
+        Marshal.Copy(BitConverter.GetBytes(entryCount), 0, pBuffer, sizeof(uint));
+        GCHandle h1 = GCHandle.Alloc(entry1, GCHandleType.Pinned);
+        GCHandle h2 = GCHandle.Alloc(entry2, GCHandleType.Pinned);
+        try
+        {
+            Marshal.Copy(h1.AddrOfPinnedObject(), buffer, sizeof(uint), structSize);
+            Marshal.Copy(h2.AddrOfPinnedObject(), buffer, sizeof(uint) + structSize, structSize);
+
+            if (!DeviceIoControl(device, IOCTL_FILTER_MODIFY_BLOCK_TABLE, pBuffer, (uint)buffer.Length, buffer, 0, out _, IntPtr.Zero))
+                throw new IOException("DeviceIoControl failed", Marshal.GetLastWin32Error());
+        }
+        finally
+        {
+            h1.Free();
+            h2.Free();
+            bufferHandle.Free();
+        }
+    }
 
     static void Main()
     {
@@ -96,6 +148,8 @@ class Program
                 Console.WriteLine("Filter Instance: " + name);
                 offset += nameLen;
             }
+
+            SendBlockTableIoctl(device);
         }
     }
 }

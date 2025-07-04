@@ -40,6 +40,17 @@ Abstract:
 #define FILTER_MINOR_NDIS_VERSION   30
 #endif
 
+// TODO: Draft implementation of filtering rules
+#define FILTER_MAX_LOCK_IP_ADDRESS_NUM (32)
+#define FILTER_MAX_LOCK_PORT_NUM (8)
+
+typedef struct _FILTER_BLOCK_TABLE
+{
+	ULONG IpAddress[FILTER_MAX_LOCK_IP_ADDRESS_NUM];
+	ULONG IpAddressNumber;
+	USHORT Port[FILTER_MAX_LOCK_IP_ADDRESS_NUM * FILTER_MAX_LOCK_PORT_NUM];
+} FILTER_BLOCK_TABLE, * PFILTER_BLOCK_TABLE;
+
 //
 // Global variables
 //
@@ -50,6 +61,9 @@ extern PDEVICE_OBJECT      NdisDeviceObject;
 
 extern FILTER_LOCK         FilterListLock;
 extern LIST_ENTRY          FilterModuleList;
+
+extern FILTER_LOCK         FilterTableLock;
+extern FILTER_BLOCK_TABLE  FilterBlockTable;
 
 #define FILTER_FRIENDLY_NAME        L"ndismfd NDIS LightWeight Filter"
 #define FILTER_UNIQUE_NAME          L"{c339e1e4-62a0-45a0-8b80-62b0adbb11af}" //unique name, quid name
