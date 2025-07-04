@@ -150,19 +150,13 @@ ndismfdDeviceIoControl(
 	BOOLEAN                     bFalse = FALSE;
 
 
-	UNREFERENCED_PARAMETER(DeviceObject);
-
-
 	IrpSp = IoGetCurrentIrpStackLocation(Irp);
-
 	if (IrpSp->FileObject == NULL)
 	{
 		return(STATUS_UNSUCCESSFUL);
 	}
 
-
 	FilterDeviceExtension = (PFILTER_DEVICE_EXTENSION)NdisGetDeviceReservedExtension(DeviceObject);
-
 	ASSERT(FilterDeviceExtension->Signature == 'FTDR');
 
 	Irp->IoStatus.Information = 0;
@@ -178,37 +172,29 @@ ndismfdDeviceIoControl(
 		InputBufferLength = IrpSp->Parameters.DeviceIoControl.InputBufferLength;
 
 		pFilter = filterFindFilterModule(InputBuffer, InputBufferLength);
-
 		if (pFilter == NULL)
 		{
-
 			break;
 		}
 
 		NdisFRestartFilter(pFilter->FilterHandle);
-
 		break;
 
-	case IOCTL_FILTER_ENUERATE_ALL_INSTANCES:
-
+	case IOCTL_FILTER_ENUMERATE_ALL_INSTANCES:
 		InputBuffer = OutputBuffer = (PUCHAR)Irp->AssociatedIrp.SystemBuffer;
 		InputBufferLength = IrpSp->Parameters.DeviceIoControl.InputBufferLength;
 		OutputBufferLength = IrpSp->Parameters.DeviceIoControl.OutputBufferLength;
-
 
 		pInfo = OutputBuffer;
 
 		FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
 
 		Link = FilterModuleList.Flink;
-
 		while (Link != &FilterModuleList)
 		{
 			pFilter = CONTAINING_RECORD(Link, MS_FILTER, FilterModuleLink);
 
-
 			InfoLength += (pFilter->FilterModuleName.Length + sizeof(USHORT));
-
 			if (InfoLength <= OutputBufferLength)
 			{
 				*(PUSHORT)pInfo = pFilter->FilterModuleName.Length;

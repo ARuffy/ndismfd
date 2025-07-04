@@ -14,6 +14,17 @@ Abstract:
 
 #define __FILENUMBER    'PNPF'
 
+// TODO: Draft implementation of filtering rules
+#define FILTER_MAX_LOCK_IP_ADDRESS_NUM (32)
+#define FILTER_MAX_LOCK_PORT_NUM (8)
+
+typedef struct _FILTER_BLOCK_TABLE
+{
+	ULONG IpAddress[FILTER_MAX_LOCK_IP_ADDRESS_NUM];
+	ULONG IpAddressNumber;
+	USHORT Port[FILTER_MAX_LOCK_IP_ADDRESS_NUM * FILTER_MAX_LOCK_PORT_NUM];
+} FILTER_BLOCK_TABLE, * PFILTER_BLOCK_TABLE;
+
 // This directive puts the DriverEntry function into the INIT segment of the
 // driver.  To conserve memory, the code will be discarded when the driver's
 // DriverEntry function returns.  You can declare other functions used only
@@ -30,6 +41,9 @@ PDEVICE_OBJECT      NdisDeviceObject = NULL;
 
 FILTER_LOCK         FilterListLock;
 LIST_ENTRY          FilterModuleList;
+
+FILTER_LOCK         FilterTableLock;
+FILTER_BLOCK_TABLE  FilterBlockTable;
 
 // Thread
 HANDLE FilterThreadHandle = NULL;
@@ -132,8 +146,10 @@ Return Value:
 		FilterDriverHandle = NULL;
 
 		FILTER_INIT_LOCK(&FilterListLock);
-
 		InitializeListHead(&FilterModuleList);
+
+		FILTER_INIT_LOCK(&FilterTableLock);
+		NdisZeroMemory(&FilterBlockTable, sizeof(FilterBlockTable));
 
 		Status = NdisFRegisterFilterDriver(DriverObject,
 			(NDIS_HANDLE)FilterDriverObject,
@@ -962,159 +978,6 @@ N.B.: It is important to check the ReceiveFlags in NDIS_TEST_RECEIVE_CANNOT_PEND
 
 }
 
-_IRQL_requires_max_(DISPATCH_LEVEL)
-NDIS_STATUS
-filterDoInternalRequest(
-	_In_ PMS_FILTER                   FilterModuleContext,
-	_In_ NDIS_REQUEST_TYPE            RequestType,
-	_In_ NDIS_OID                     Oid,
-	_Inout_updates_bytes_to_(InformationBufferLength, *pBytesProcessed)
-	PVOID                        InformationBuffer,
-	_In_ ULONG                        InformationBufferLength,
-	_In_opt_ ULONG                    OutputBufferLength,
-	_In_ ULONG                        MethodId,
-	_Out_ PULONG                      pBytesProcessed
-)
-/*++
-
-Routine Description:
-
-	Utility routine that forms and sends an NDIS_OID_REQUEST to the
-	miniport, waits for it to complete, and returns status
-	to the caller.
-
-	NOTE: this assumes that the calling routine ensures validity
-	of the filter handle until this returns.
-
-Arguments:
-
-	FilterModuleContext - pointer to our filter module context
-	RequestType - NdisRequest[Set|Query|method]Information
-	Oid - the object being set/queried
-	InformationBuffer - data for the request
-	InformationBufferLength - length of the above
-	OutputBufferLength  - valid only for method request
-	MethodId - valid only for method request
-	pBytesProcessed - place to return bytes read/written
-
-Return Value:
-
-	Status of the set/query request
-
---*/
-{
-	FILTER_REQUEST              FilterRequest;
-	PNDIS_OID_REQUEST           NdisRequest = &FilterRequest.Request;
-	NDIS_STATUS                 Status;
-
-	ASSERT(pBytesProcessed != NULL);
-
-	*pBytesProcessed = 0;
-
-	NdisZeroMemory(NdisRequest, sizeof(NDIS_OID_REQUEST));
-
-	NdisInitializeEvent(&FilterRequest.ReqEvent);
-
-	NdisRequest->Header.Type = NDIS_OBJECT_TYPE_OID_REQUEST;
-	NdisRequest->Header.Revision = NDIS_OID_REQUEST_REVISION_1;
-	NdisRequest->Header.Size = sizeof(NDIS_OID_REQUEST);
-	NdisRequest->RequestType = RequestType;
-
-	switch (RequestType)
-	{
-	case NdisRequestQueryInformation:
-		NdisRequest->DATA.QUERY_INFORMATION.Oid = Oid;
-		NdisRequest->DATA.QUERY_INFORMATION.InformationBuffer =
-			InformationBuffer;
-		NdisRequest->DATA.QUERY_INFORMATION.InformationBufferLength =
-			InformationBufferLength;
-		break;
-
-	case NdisRequestSetInformation:
-		NdisRequest->DATA.SET_INFORMATION.Oid = Oid;
-		NdisRequest->DATA.SET_INFORMATION.InformationBuffer =
-			InformationBuffer;
-		NdisRequest->DATA.SET_INFORMATION.InformationBufferLength =
-			InformationBufferLength;
-		break;
-
-	case NdisRequestMethod:
-		NdisRequest->DATA.METHOD_INFORMATION.Oid = Oid;
-		NdisRequest->DATA.METHOD_INFORMATION.MethodId = MethodId;
-		NdisRequest->DATA.METHOD_INFORMATION.InformationBuffer =
-			InformationBuffer;
-		NdisRequest->DATA.METHOD_INFORMATION.InputBufferLength =
-			InformationBufferLength;
-		NdisRequest->DATA.METHOD_INFORMATION.OutputBufferLength = OutputBufferLength;
-		break;
-
-
-
-	default:
-
-		ASSERTMSG("Invalid request type in filterDoInternalRequest",
-			FALSE);
-
-		break;
-	}
-
-	NdisRequest->RequestId = (PVOID)FILTER_REQUEST_ID;
-
-
-	Status = NdisFOidRequest(FilterModuleContext->FilterHandle,
-		NdisRequest);
-
-
-	if (Status == NDIS_STATUS_PENDING)
-	{
-		NdisWaitEvent(&FilterRequest.ReqEvent, 0);
-		Status = FilterRequest.Status;
-	}
-
-
-
-	if (Status == NDIS_STATUS_SUCCESS)
-	{
-		if (RequestType == NdisRequestSetInformation)
-		{
-			*pBytesProcessed = NdisRequest->DATA.SET_INFORMATION.BytesRead;
-		}
-
-		if (RequestType == NdisRequestQueryInformation)
-		{
-			*pBytesProcessed = NdisRequest->DATA.QUERY_INFORMATION.BytesWritten;
-		}
-
-		if (RequestType == NdisRequestMethod)
-		{
-			*pBytesProcessed = NdisRequest->DATA.METHOD_INFORMATION.BytesWritten;
-		}
-
-		//
-		// The driver below should set the correct value to BytesWritten
-		// or BytesRead. But now, we just truncate the value to InformationBufferLength
-		//
-		if (RequestType == NdisRequestMethod)
-		{
-			if (*pBytesProcessed > OutputBufferLength)
-			{
-				*pBytesProcessed = OutputBufferLength;
-			}
-		}
-		else
-		{
-
-			if (*pBytesProcessed > InformationBufferLength)
-			{
-				*pBytesProcessed = InformationBufferLength;
-			}
-		}
-	}
-
-
-	return Status;
-}
-
 static
 BOOLEAN
 _ExtractIPv4SrcIpAndDstPort(
@@ -1204,9 +1067,49 @@ _ExtractIPv4SrcIpAndDstPort(
 	return TRUE;
 }
 
+static BOOLEAN _IsAllowedIpAddrAndPort(ULONG IpAddr, USHORT DstPort)
+{
+	ULONG i, j, portIndex;
+
+	for (i = 0; i < FilterBlockTable.IpAddressNumber; i++) {
+		if (FilterBlockTable.IpAddress[i] == IpAddr) {
+
+			portIndex = i * FILTER_MAX_LOCK_PORT_NUM;
+			if (FilterBlockTable.Port[portIndex] == 0) // All Ports Are Blocked
+				return FALSE;
+
+			for (j = 0; j < FILTER_MAX_LOCK_PORT_NUM; j++, portIndex++) {
+				if (FilterBlockTable.Port[portIndex] == DstPort) {
+					return FALSE;
+				}
+			}
+
+			i = FilterBlockTable.IpAddressNumber; // Not Found: break the loop
+		}
+	}
+
+	return TRUE;
+}
+
 static BOOLEAN _IsAllowServiceEntries(_In_ PFILTER_SERVICE_ENTRY ServiceEntry)
 {
-	UNREFERENCED_PARAMETER(ServiceEntry);
+	BOOLEAN bResult = TRUE;
+	PFILTER_SERVICE_ITEM pServiceItem = NULL;
+
+	if (ServiceEntry == NULL || ServiceEntry->NumberOfServiceItems <= 0)
+		return FALSE;
+
+	FILTER_ACQUIRE_LOCK(&FilterTableLock, FALSE);
+	pServiceItem = ServiceEntry->ServiceItems;
+	while (pServiceItem) {
+		if (!_IsAllowedIpAddrAndPort(pServiceItem->IpAddr, pServiceItem->DstPort)) {
+			bResult = FALSE;
+			break;
+		}
+		pServiceItem = pServiceItem->Next;
+	}
+	FILTER_RELEASE_LOCK(&FilterTableLock, FALSE);
+
 	return TRUE;
 }
 

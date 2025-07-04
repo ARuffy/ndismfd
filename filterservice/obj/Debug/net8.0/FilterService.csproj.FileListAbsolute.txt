@@ -1,0 +1,15 @@
+C:\Users\Aleksandr_Ershov1\Source\ndismfd\FilterService\bin\Debug\net8.0\FilterService.exe
+C:\Users\Aleksandr_Ershov1\Source\ndismfd\FilterService\bin\Debug\net8.0\FilterService.deps.json
+C:\Users\Aleksandr_Ershov1\Source\ndismfd\FilterService\bin\Debug\net8.0\FilterService.runtimeconfig.json
+C:\Users\Aleksandr_Ershov1\Source\ndismfd\FilterService\bin\Debug\net8.0\FilterService.dll
+C:\Users\Aleksandr_Ershov1\Source\ndismfd\FilterService\bin\Debug\net8.0\FilterService.pdb
+C:\Users\Aleksandr_Ershov1\Source\ndismfd\FilterService\obj\Debug\net8.0\FilterService.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\Aleksandr_Ershov1\Source\ndismfd\FilterService\obj\Debug\net8.0\FilterService.AssemblyInfoInputs.cache
+C:\Users\Aleksandr_Ershov1\Source\ndismfd\FilterService\obj\Debug\net8.0\FilterService.AssemblyInfo.cs
+C:\Users\Aleksandr_Ershov1\Source\ndismfd\FilterService\obj\Debug\net8.0\FilterService.csproj.CoreCompileInputs.cache
+C:\Users\Aleksandr_Ershov1\Source\ndismfd\FilterService\obj\Debug\net8.0\FilterService.sourcelink.json
+C:\Users\Aleksandr_Ershov1\Source\ndismfd\FilterService\obj\Debug\net8.0\FilterService.dll
+C:\Users\Aleksandr_Ershov1\Source\ndismfd\FilterService\obj\Debug\net8.0\refint\FilterService.dll
+C:\Users\Aleksandr_Ershov1\Source\ndismfd\FilterService\obj\Debug\net8.0\FilterService.pdb
+C:\Users\Aleksandr_Ershov1\Source\ndismfd\FilterService\obj\Debug\net8.0\FilterService.genruntimeconfig.cache
+C:\Users\Aleksandr_Ershov1\Source\ndismfd\FilterService\obj\Debug\net8.0\ref\FilterService.dll

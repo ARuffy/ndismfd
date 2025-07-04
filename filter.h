@@ -157,14 +157,6 @@ typedef enum _FILTER_STATE
 	FilterDetaching
 } FILTER_STATE;
 
-
-typedef struct _FILTER_REQUEST
-{
-	NDIS_OID_REQUEST       Request;
-	NDIS_EVENT             ReqEvent;
-	NDIS_STATUS            Status;
-} FILTER_REQUEST, * PFILTER_REQUEST;
-
 typedef struct _MS_FILTER
 {
 	LIST_ENTRY                      FilterModuleLink;
@@ -184,11 +176,10 @@ typedef struct _MS_FILTER
 	NDIS_STRING                     FilterName;
 
 	// NBL Pool
-	NDIS_HANDLE NetBufferPool;
-	NDIS_HANDLE NetBufferListPool;
+	NDIS_HANDLE                     NetBufferPool;
+	NDIS_HANDLE                     NetBufferListPool;
 
-	QUEUE_HEADER NetBufferListsQueue; // NetBufferLists that are queued for processing
-
+	QUEUE_HEADER                    NetBufferListsQueue; // NetBufferLists that are queued for processing
 }MS_FILTER, * PMS_FILTER;
 
 
@@ -261,20 +252,6 @@ filterFindFilterModule(
 	_In_reads_bytes_(BufferLength)
 	PUCHAR                   Buffer,
 	_In_ ULONG                    BufferLength
-);
-
-_IRQL_requires_max_(DISPATCH_LEVEL)
-NDIS_STATUS
-filterDoInternalRequest(
-	_In_ PMS_FILTER                   FilterModuleContext,
-	_In_ NDIS_REQUEST_TYPE            RequestType,
-	_In_ NDIS_OID                     Oid,
-	_Inout_updates_bytes_to_(InformationBufferLength, *pBytesProcessed)
-	PVOID                        InformationBuffer,
-	_In_ ULONG                        InformationBufferLength,
-	_In_opt_ ULONG                    OutputBufferLength,
-	_In_ ULONG                        MethodId,
-	_Out_ PULONG                      pBytesProcessed
 );
 EXTERN_C_END
 
