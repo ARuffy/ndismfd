@@ -1061,7 +1061,7 @@ _ExtractIPv4SrcIpAndDstPort(
 
 	dstPort = *(USHORT*)(pData + sizeof(ETHERNET_HEADER) + ipHeaderLength + 2);
 
-	*SrcIp = ipHeader->SrcAddr;
+	*SrcIp = RtlUlongByteSwap(ipHeader->SrcAddr);
 	*DstPort = RtlUshortByteSwap(dstPort);
 
 	return TRUE;
@@ -1110,7 +1110,7 @@ static BOOLEAN _IsAllowServiceEntries(_In_ PFILTER_SERVICE_ENTRY ServiceEntry)
 	}
 	FILTER_RELEASE_LOCK(&FilterTableLock, FALSE);
 
-	return TRUE;
+	return bResult;
 }
 
 #define _FreeServiceEntry(_ServiceEntry) \
@@ -1221,7 +1221,8 @@ VOID FilterThreadRoutine(_In_ PVOID ThreadContext)
 		pFilterServiceEntry = _CreateServiceEntryFromNetBufferList(pFilter, pNetBufferList);
 		if (pFilterServiceEntry) {
 			bAllowNetBufferList = _IsAllowServiceEntries(pFilterServiceEntry);
-			DEBUGP(DL_TRACE, "??? Processed Service Queue: NBL = %p, Items = %d\n", pNetBufferList, pFilterServiceEntry->NumberOfServiceItems);
+			DEBUGP(DL_TRACE, "??? Processed Service Queue: NBL = %p, Items = %d Pass = %d\n",
+				pNetBufferList, pFilterServiceEntry->NumberOfServiceItems, bAllowNetBufferList);
 			_FreeServiceEntry(pFilterServiceEntry);
 		}
 		else {
