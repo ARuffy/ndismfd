@@ -169,6 +169,59 @@ _PushBlockTableEntry(
 	return FALSE;
 }
 
+static
+BOOLEAN
+_WriteFilterPackages(PMS_FILTER Filter, PUCHAR Buffer, ULONG BufferLength, PULONG Bytes)
+{
+	const ULONG kItemSize = sizeof(ULONG) + sizeof(USHORT);
+	PFILTER_SERVICE_ENTRY pServiceEntry = NULL;
+	PFILTER_SERVICE_ITEM pServiceItem = NULL;
+	ULONG Length = 0;
+	ULONG byteToWrite = 0;
+	BOOLEAN bBufferIsToSmall = FALSE;
+
+	FILTER_ACQUIRE_LOCK(&Filter->Lock, FALSE);
+
+	pServiceEntry = Filter->ServiceEntryRingBuffer.Head;
+	while (pServiceEntry != Filter->ServiceEntryRingBuffer.Current) {
+
+		if (pServiceEntry->NumberOfServiceItems <= 0 || pServiceEntry->ServiceItems == NULL)
+			continue;
+
+		byteToWrite = pServiceEntry->NumberOfServiceItems * kItemSize + sizeof(ULONG);
+		if (BufferLength < byteToWrite) {
+			bBufferIsToSmall = TRUE;
+			break;
+		}
+
+		pServiceItem = pServiceEntry->ServiceItems;
+		*(PULONG)Buffer = pServiceEntry->NumberOfServiceItems;
+		Buffer += sizeof(ULONG);
+
+		// Write Items
+		while (pServiceItem) {
+			*(PULONG)Buffer = RtlUlongByteSwap(pServiceItem->IpAddr);
+			Buffer += sizeof(ULONG);
+			*(PUSHORT)Buffer = pServiceItem->DstPort;
+			Buffer += sizeof(PUSHORT);
+
+			pServiceItem = pServiceItem->Next;
+		}
+
+		Length += byteToWrite;
+		BufferLength -= byteToWrite;
+
+		pServiceEntry = pServiceEntry->Next;
+	}
+
+	FILTER_RELEASE_LOCK(&Filter->Lock, FALSE);
+
+	if (Bytes)
+		*Bytes = Length;
+
+	return !bBufferIsToSmall;
+}
+
 _Use_decl_annotations_
 NTSTATUS
 ndismfdDeviceIoControl(
@@ -296,6 +349,56 @@ ndismfdDeviceIoControl(
 		Status = STATUS_SUCCESS;
 		break;
 
+	case IOCTL_FILTER_GET_ALL_PACKAGES:
+		OutputBuffer = (PUCHAR)Irp->AssociatedIrp.SystemBuffer;
+		OutputBufferLength = IrpSp->Parameters.DeviceIoControl.OutputBufferLength;
+		pInfo = OutputBuffer;
+
+		FILTER_ACQUIRE_LOCK(&FilterListLock, bFalse);
+
+		Link = FilterModuleList.Flink;
+		while (Link != &FilterModuleList)
+		{
+			pFilter = CONTAINING_RECORD(Link, MS_FILTER, FilterModuleLink);
+
+			InfoLength += (pFilter->FilterModuleName.Length + sizeof(USHORT));
+			if (InfoLength <= OutputBufferLength)
+			{
+				*(PUSHORT)pInfo = pFilter->FilterModuleName.Length;
+				NdisMoveMemory(pInfo + sizeof(USHORT),
+					(PUCHAR)(pFilter->FilterModuleName.Buffer),
+					pFilter->FilterModuleName.Length);
+
+				pInfo += (pFilter->FilterModuleName.Length + sizeof(USHORT));
+
+				ULONG bytes = 0;
+				BOOLEAN bResult = _WriteFilterPackages(pFilter, pInfo + sizeof(ULONG), OutputBufferLength - InfoLength, &bytes);
+		
+				*(PULONG)pInfo = bytes;
+				bytes = sizeof(ULONG) + bytes; // written bytes
+				pInfo += bytes;
+				InfoLength += bytes;
+
+				if (!bResult)
+					break;
+			}
+
+			Link = Link->Flink;
+		}
+
+		FILTER_RELEASE_LOCK(&FilterListLock, bFalse);
+		if (InfoLength <= OutputBufferLength)
+		{
+			Status = NDIS_STATUS_SUCCESS;
+		}
+		//
+		// Buffer is small
+		//
+		else
+		{
+			Status = STATUS_BUFFER_TOO_SMALL;
+		}
+		break;
 
 	default:
 		break;

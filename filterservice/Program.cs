@@ -18,7 +18,9 @@ class Program
     static readonly uint IOCTL_FILTER_ENUMERATE_ALL_INSTANCES =
         CTL_CODE(FILE_DEVICE_PHYSICAL_NETCARD, 2, METHOD_BUFFERED, FILE_ANY_ACCESS);
     static readonly uint IOCTL_FILTER_MODIFY_BLOCK_TABLE =
-         CTL_CODE(FILE_DEVICE_PHYSICAL_NETCARD, 8, METHOD_BUFFERED, FILE_ANY_ACCESS);
+        CTL_CODE(FILE_DEVICE_PHYSICAL_NETCARD, 8, METHOD_BUFFERED, FILE_ANY_ACCESS);
+    static readonly uint IOCTL_FILTER_GET_ALL_PACKAGES =
+        CTL_CODE(FILE_DEVICE_PHYSICAL_NETCARD, 9, METHOD_BUFFERED, FILE_ANY_ACCESS);
 
     [StructLayout(LayoutKind.Sequential, Pack = 4)]
     struct FILTER_BLOCK_TABLE_ENTRY
@@ -49,44 +51,84 @@ class Program
         out uint lpBytesReturned,
         IntPtr lpOverlapped);
 
-    public static void SendBlockTableIoctl(SafeFileHandle device)
+    public static void SendBlockTableIoctl(SafeFileHandle device, string ipAddr, ushort port)
     {
-        var ip = BitConverter.ToUInt32(IPAddress.Parse("192.168.56.1").GetAddressBytes(), 0);
-        FILTER_BLOCK_TABLE_ENTRY entry1 = new FILTER_BLOCK_TABLE_ENTRY
+        var ip = BitConverter.ToUInt32(IPAddress.Parse(ipAddr).GetAddressBytes(), 0);
+        FILTER_BLOCK_TABLE_ENTRY blockEntry = new FILTER_BLOCK_TABLE_ENTRY
         {
             IpAddr = ip,
-            Port = 5566,
-            BlockType = 0
-        };
-        FILTER_BLOCK_TABLE_ENTRY entry2 = new FILTER_BLOCK_TABLE_ENTRY
-        {
-            IpAddr = ip,
-            Port = 5577,
+            Port = port,
             BlockType = 0
         };
 
-        uint entryCount = 2;
+        uint entryCount = 1;
         int structSize = Marshal.SizeOf<FILTER_BLOCK_TABLE_ENTRY>();
         byte[] buffer = new byte[sizeof(uint) + structSize * entryCount];
         var bufferHandle = GCHandle.Alloc(buffer, GCHandleType.Pinned);
         var pBuffer = bufferHandle.AddrOfPinnedObject();
 
         Marshal.Copy(BitConverter.GetBytes(entryCount), 0, pBuffer, sizeof(uint));
-        GCHandle h1 = GCHandle.Alloc(entry1, GCHandleType.Pinned);
-        GCHandle h2 = GCHandle.Alloc(entry2, GCHandleType.Pinned);
+        GCHandle h1 = GCHandle.Alloc(blockEntry, GCHandleType.Pinned);
         try
         {
             Marshal.Copy(h1.AddrOfPinnedObject(), buffer, sizeof(uint), structSize);
-            Marshal.Copy(h2.AddrOfPinnedObject(), buffer, sizeof(uint) + structSize, structSize);
-
             if (!DeviceIoControl(device, IOCTL_FILTER_MODIFY_BLOCK_TABLE, pBuffer, (uint)buffer.Length, buffer, 0, out _, IntPtr.Zero))
                 throw new IOException("DeviceIoControl failed", Marshal.GetLastWin32Error());
+            else
+                Console.WriteLine($"Block table entry sent successfully: {ipAddr}:{port}");
         }
         finally
         {
             h1.Free();
-            h2.Free();
             bufferHandle.Free();
+        }
+    }
+
+    static private void ReadFilterPackages(SafeFileHandle device)
+    {
+        const int outBufferSize = 6 * 512 + 1024;
+        byte[] outBuffer = new byte[outBufferSize];
+        uint bytesReturned;
+
+        bool result = DeviceIoControl(device, IOCTL_FILTER_GET_ALL_PACKAGES, IntPtr.Zero, 0, outBuffer, (uint)outBuffer.Length, out bytesReturned, IntPtr.Zero);
+        if (!result)
+        {
+            Console.WriteLine("DeviceIoControl failed. Error: " + Marshal.GetLastWin32Error());
+            return;
+        }
+
+        int offset = 0;
+        while (offset + 2 <= bytesReturned)
+        {
+            // Read module name length
+            ushort nameLen = BitConverter.ToUInt16(outBuffer, offset);
+            offset += 2;
+            if (offset + nameLen > bytesReturned) break;
+
+            // Read module name (Unicode)
+            string moduleName = Encoding.Unicode.GetString(outBuffer, offset, nameLen);
+            offset += nameLen;
+
+            Console.WriteLine($"Filter Module: {moduleName}");
+
+            if (offset + 4 > bytesReturned) break;
+            // Read package data length
+            uint packageDataLen = BitConverter.ToUInt32(outBuffer, offset);
+            offset += 4;
+
+            int packageIndx = 0;
+            int packageOffset = offset;
+            int packageEnd = offset + (int)packageDataLen;
+            while (packageOffset + 6 <= packageEnd && packageEnd <= bytesReturned)
+            {
+                uint ip = BitConverter.ToUInt32(outBuffer, packageOffset);
+                ushort port = BitConverter.ToUInt16(outBuffer, packageOffset + 4);
+                packageOffset += 6;
+                packageIndx++;
+
+                Console.WriteLine($"\t{packageIndx}] IpAddr: {new System.Net.IPAddress(ip)}, Port: {port}");
+            }
+            offset = packageEnd;
         }
     }
 
@@ -114,42 +156,9 @@ class Program
                 return;
             }
 
-            // Allocate a buffer for output (adjust size as needed)
-            byte[] outBuffer = new byte[4096];
-            uint bytesReturned;
+            ReadFilterPackages(device);
 
-            bool result = DeviceIoControl(
-                device,
-                IOCTL_FILTER_ENUMERATE_ALL_INSTANCES,
-                IntPtr.Zero,
-                0,
-                outBuffer,
-                (uint)outBuffer.Length,
-                out bytesReturned,
-                IntPtr.Zero);
-
-            if (!result)
-            {
-                Console.WriteLine("DeviceIoControl failed: " + Marshal.GetLastWin32Error());
-                return;
-            }
-
-            // Parse the output buffer
-            int offset = 0;
-            while (offset + 2 <= bytesReturned)
-            {
-                ushort nameLen = BitConverter.ToUInt16(outBuffer, offset);
-                offset += 2;
-                if (nameLen == 0 || offset + nameLen > bytesReturned)
-                    break;
-
-                // Unicode string (UTF-16LE)
-                string name = Encoding.Unicode.GetString(outBuffer, offset, nameLen);
-                Console.WriteLine("Filter Instance: " + name);
-                offset += nameLen;
-            }
-
-            SendBlockTableIoctl(device);
+            //SendBlockTableIoctl(device, "192.168.56.1", 5566);
         }
     }
 }
