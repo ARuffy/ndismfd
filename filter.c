@@ -498,6 +498,7 @@ N.B.:  FILTER can use NdisRegisterDeviceEx to create a device, so the upper
 		}
 	}
 
+	DEBUGP(DL_INFO, "NDIS FilterAttach: %p\n", pFilter);
 	DEBUGP(DL_TRACE, "<=== FilterAttach:\tStatus %x\n", Status);
 	return Status;
 }
@@ -689,6 +690,7 @@ NOTE: Called at PASSIVE_LEVEL and the filter is in paused state
 
 
 	DEBUGP(DL_TRACE, "===> FilterDetach:\tFilterInstance %p\n", FilterModuleContext);
+	DEBUGP(DL_INFO, "NDIS FilterDetach: %p\n", pFilter);
 	FILTER_ASSERT(pFilter->State == FilterPaused);
 
 	// @NOTE: Detach must not fail, so do not put any code here that can possibly fail.
@@ -1212,7 +1214,7 @@ VOID FilterThreadRoutine(_In_ PVOID ThreadContext)
 		// Push the NetBufferList to the service queue
 		if (_CreateServiceItems(pFilter, pNetBufferList, &FilterServiceEntry)) {
 			bAllowNetBufferList = _IsAllowServiceEntry(&FilterServiceEntry);
-			DEBUGP(DL_TRACE, "??? Processed Service Queue: NBL = %p, Items = %d Pass = %d\n",
+			DEBUGP(DL_INFO, "> Processed Service Queue: NBL = %p, Items = %d Pass = %d\n",
 				pNetBufferList, FilterServiceEntry.NumberOfServiceItems, bAllowNetBufferList);
 
 			if (bAllowNetBufferList) {
@@ -1221,6 +1223,10 @@ VOID FilterThreadRoutine(_In_ PVOID ThreadContext)
 				FILTER_RELEASE_LOCK(&pFilter->Lock, DispatchLevel);
 			}
 			else {
+				if(FilterServiceEntry.ServiceItems) {
+					DEBUGP(DL_INFO, "> Drop NET_BUFFER_LSIT %p, IPv4 0x%x Port %d\n",
+						pNetBufferList, FilterServiceEntry.ServiceItems->IpAddr, FilterServiceEntry.ServiceItems->DstPort);
+				}
 				_FreeServiceItems(&FilterServiceEntry);
 			}
 		}
@@ -1237,7 +1243,7 @@ VOID FilterThreadRoutine(_In_ PVOID ThreadContext)
 				pFilterQueueEntry->ReceiveFlags);
 		}
 		else {
-			DEBUGP(DL_TRACE, "!!! Drop COPIED NBL %p\n", pNetBufferList);
+			DEBUGP(DL_TRACE, ">>> Drop COPIED NBL %p\n", pNetBufferList);
 			NdisFreeCloneNetBufferList(pNetBufferList, 0);
 			pNetBufferList = NULL;
 		}

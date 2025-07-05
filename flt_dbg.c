@@ -23,7 +23,7 @@ Notes:
 
 #if DBG
 
-INT                   filterDebugLevel = DL_TRACE;
+INT                   filterDebugLevel = DL_INFO;
 
 NDIS_SPIN_LOCK        filterDbgLogLock;
 
@@ -193,7 +193,7 @@ filterAuditShutdown(
                 while (filterdMemoryHead != (PFILTERD_ALLOCATION)NULL)
                 {
                     pAllocInfo = filterdMemoryHead;
-                    DEBUGP(DL_INFO, "AuditShutdown: will free 0x%p\n", pAllocInfo);
+                    DEBUGP(DL_LOUD, "AuditShutdown: will free 0x%p\n", pAllocInfo);
                     filterAuditFreeMem(&(pAllocInfo->UserData));
                 }
             }

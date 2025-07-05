@@ -30,6 +30,12 @@ class Program
         public ushort BlockType;
     }
 
+    struct FILTER_NET_BUFFER
+    {
+        public uint ipAddr;
+        public ushort port;
+    }
+
     [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Auto)]
     static extern SafeFileHandle CreateFile(
         string lpFileName,
@@ -84,7 +90,7 @@ class Program
         }
     }
 
-    static private void ReadFilterPackages(SafeFileHandle device)
+    static private FILTER_NET_BUFFER[] ReadFilterPackages(SafeFileHandle device)
     {
         const int outBufferSize = 6 * 512 + 1024;
         byte[] outBuffer = new byte[outBufferSize];
@@ -94,9 +100,10 @@ class Program
         if (!result)
         {
             Console.WriteLine("DeviceIoControl failed. Error: " + Marshal.GetLastWin32Error());
-            return;
+            return Array.Empty<FILTER_NET_BUFFER>();
         }
 
+        List<FILTER_NET_BUFFER> netBuffers = new();
         int offset = 0;
         while (offset + 2 <= bytesReturned)
         {
@@ -126,10 +133,13 @@ class Program
                 packageOffset += 6;
                 packageIndx++;
 
-                Console.WriteLine($"\t{packageIndx}] IpAddr: {new System.Net.IPAddress(ip)}, Port: {port}");
+                Console.WriteLine($"\t{packageIndx}. {new System.Net.IPAddress(ip)}:{port}");
+                netBuffers.Add(new FILTER_NET_BUFFER { ipAddr = ip, port = port });
             }
             offset = packageEnd;
         }
+
+        return netBuffers.ToArray();
     }
 
     static void Main()
@@ -140,6 +150,27 @@ class Program
         const uint OPEN_EXISTING = 3;
         const uint FILE_SHARE_READ = 1;
         const uint FILE_SHARE_WRITE = 2;
+
+        // parse arguments to take ip addres and port to block
+        if (Environment.GetCommandLineArgs().Length < 3)
+        {
+            Console.WriteLine("Usage: Program.exe <IP Address> <Port>");
+            return;
+        }
+
+        string ipAddress = Environment.GetCommandLineArgs()[1];
+        uint ipAddr = BitConverter.ToUInt32(IPAddress.Parse(ipAddress).GetAddressBytes(), 0);
+        if (ipAddr == 0)
+        {
+            Console.WriteLine("Invalid IP address.");
+            return;
+        }
+
+        if (!ushort.TryParse(Environment.GetCommandLineArgs()[2], out ushort port) || port == 0)
+        {
+            Console.WriteLine("Invalid port number.");
+            return;
+        }
 
         using (var device = CreateFile(
             devicePath,
@@ -156,9 +187,32 @@ class Program
                 return;
             }
 
-            ReadFilterPackages(device);
+            bool bIsBlocked = false;
+            while (true)
+            {
+                if (Console.KeyAvailable && Console.ReadKey(true).Key == ConsoleKey.Escape)
+                {
+                    Console.WriteLine("Exiting...");
+                    break;
+                }
 
-            //SendBlockTableIoctl(device, "192.168.56.1", 5566);
+                var netBuffers = ReadFilterPackages(device);
+                if (!bIsBlocked)
+                {
+                    foreach (var netb in netBuffers)
+                    {
+                        if (netb.ipAddr == ipAddr && netb.port == port)
+                        {
+                            Console.WriteLine($"> NET_BUFFER BLOCK: {ipAddress}:{port}");
+                            SendBlockTableIoctl(device, ipAddress, port);
+                            bIsBlocked = true;
+                            break;
+                        }
+                    }
+                }
+
+                System.Threading.Thread.Sleep(3000);
+            }
         }
     }
 }
